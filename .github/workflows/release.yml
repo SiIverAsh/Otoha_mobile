@@ -1,0 +1,269 @@
+name: Release Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'New release tag matching the APK version, e.g. v0.2.0'
+        type: string
+        required: true
+        default: v0.2.0
+      prerelease:
+        description: Mark this release as a prerelease
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate tag and committed release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo 'Tag must match vX.Y.Z' >&2
+            exit 1
+          fi
+          test -s "docs/releases/$TAG.md"
+      - name: Refuse an existing tag or release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const tag = process.env.TAG;
+            for (const [lookup, message] of [
+              [() => github.rest.git.getRef({owner, repo, ref: `tags/${tag}`}), 'Tag already exists'],
+              [() => github.rest.repos.getReleaseByTag({owner, repo, tag}), 'Release already exists'],
+            ]) {
+              try {
+                await lookup();
+                core.setFailed(message);
+              } catch (error) {
+                if (error.status !== 404) throw error;
+              }
+            }
+
+  checks:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install Android SDK
+        run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+      - name: JVM tests and release lint
+        run: ./gradlew --no-daemon :core:test :app:testDebugUnitTest :app:lintRelease
+      - name: Compile source regexes with ICU
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libicu-dev
+          python3 scripts/check-icu-regex.py
+      - name: Upload check reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-check-reports-${{ inputs.tag }}
+          path: |
+            core/build/reports/
+            core/build/test-results/
+            app/build/reports/
+            app/build/test-results/
+          if-no-files-found: warn
+          retention-days: 14
+
+  android-regression:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install Android SDK
+        run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -r /dev/kvm
+          test -w /dev/kvm
+      - name: Run parser regressions on Android 36 ART and ICU
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-boot-timeout: 900
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -accel on
+          script: ./gradlew --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=io.github.otoha.mobile.AndroidParserCompatibilityTest
+      - name: Require all three Android parser tests to have run
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          expected = {
+              'playerRefreshWithoutSubtitlesInitializesParser',
+              'subtitlePatternsAndAssOverrideRemovalWorkOnAndroidIcu',
+              'sourceParserPatternsInitializeOnAndroidIcu',
+          }
+          seen = set()
+          for report in Path('app/build/outputs/androidTest-results/connected').rglob('*.xml'):
+              for case in ET.parse(report).iter('testcase'):
+                  if not case.get('classname', '').endswith('AndroidParserCompatibilityTest'):
+                      continue
+                  if any(case.find(kind) is not None for kind in ('failure', 'error', 'skipped')):
+                      raise SystemExit('An Android parser regression failed or was skipped')
+                  seen.add(case.get('name'))
+          if seen != expected:
+              raise SystemExit(f'Expected all three Android parser tests; observed: {sorted(seen)}')
+          print('All three parser regressions passed on Android 36')
+          PY
+      - name: Upload Android regression reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-regression-reports-${{ inputs.tag }}
+          path: |
+            app/build/reports/androidTests/
+            app/build/outputs/androidTest-results/
+            app/build/outputs/apk/androidTest/
+          if-no-files-found: warn
+          retention-days: 14
+
+  publish:
+    needs: [validate, checks, android-regression]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install Android SDK
+        run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+      - name: Build signed release APK
+        env:
+          OTOHA_KEYSTORE_BASE64: ${{ secrets.OTOHA_KEYSTORE_BASE64 }}
+          OTOHA_KEYSTORE_PASSWORD: ${{ secrets.OTOHA_KEYSTORE_PASSWORD }}
+          OTOHA_KEY_ALIAS: ${{ secrets.OTOHA_KEY_ALIAS }}
+          OTOHA_KEY_PASSWORD: ${{ secrets.OTOHA_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in OTOHA_KEYSTORE_BASE64 OTOHA_KEYSTORE_PASSWORD OTOHA_KEY_ALIAS OTOHA_KEY_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing required repository secret: $name" >&2
+              exit 1
+            fi
+          done
+          umask 077
+          export OTOHA_KEYSTORE_PATH="$RUNNER_TEMP/otoha-release.jks"
+          trap 'rm -f -- "$OTOHA_KEYSTORE_PATH"' EXIT
+          printf '%s' "$OTOHA_KEYSTORE_BASE64" | base64 --decode > "$OTOHA_KEYSTORE_PATH"
+          unset OTOHA_KEYSTORE_BASE64
+          ./gradlew --no-daemon --no-configuration-cache -Pkotlin.compiler.execution.strategy=in-process :app:assembleRelease
+      - name: Verify version, signing and checksums
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+          tag = os.environ['TAG']
+          output = Path('app/build/outputs/apk/release').resolve()
+          metadata = json.loads((output / 'output-metadata.json').read_text())
+          elements = metadata.get('elements', [])
+          if len(elements) != 1 or elements[0].get('versionName') != tag[1:]:
+              raise SystemExit('Release tag does not match the APK output-metadata versionName')
+          apk = (output / elements[0]['outputFile']).resolve()
+          if apk.parent != output or apk.suffix != '.apk' or not apk.is_file():
+              raise SystemExit('Unexpected release APK output path')
+          Path('dist').mkdir(exist_ok=True)
+          shutil.copyfile(apk, Path('dist') / f'Otoha-Mobile-{tag}.apk')
+          PY
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "dist/Otoha-Mobile-$TAG.apk"
+          cd dist
+          sha256sum "Otoha-Mobile-$TAG.apk" > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - name: Upload verified signed assets
+        if: always() && steps.package.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: otoha-mobile-signed-${{ inputs.tag }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Create the new tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Creating a new ref atomically fails if somebody created this tag during checks.
+          # Never update an existing ref or overwrite an existing release/asset.
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" --silent
+          flags=()
+          if [[ "$PRERELEASE" == 'true' ]]; then flags+=(--prerelease); fi
+          gh release create "$TAG" "dist/Otoha-Mobile-$TAG.apk" dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --verify-tag \
+            --title "Otoha Mobile $TAG" --notes-file "docs/releases/$TAG.md" "${flags[@]}"
+      - name: Upload release diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-build-diagnostics-${{ inputs.tag }}
+          path: |
+            app/build/outputs/apk/release/output-metadata.json
+            app/build/reports/
+          if-no-files-found: warn
+          retention-days: 14

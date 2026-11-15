@@ -1,0 +1,337 @@
+package io.github.otoha.mobile
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import coil.imageLoader
+import io.github.otoha.core.AudioTrack
+import io.github.otoha.core.BrowseFilters
+import io.github.otoha.core.ContentRating
+import io.github.otoha.core.FacetKind
+import io.github.otoha.core.FacetValue
+import io.github.otoha.core.PlaybackSnapshot
+import io.github.otoha.core.SourceId
+import io.github.otoha.core.WorkDetail
+import io.github.otoha.core.WorkRef
+import io.github.otoha.core.WorkSummary
+import java.net.URI
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+data class CatalogUi(
+    val works: List<WorkSummary> = emptyList(),
+    val page: Int = 0,
+    val hasMore: Boolean = true,
+    val loading: Boolean = false,
+    val error: String? = null,
+)
+
+data class MainUi(
+    val source: SourceId = SourceId.ASMR_ONE,
+    val category: String = "allages",
+    val filters: BrowseFilters = BrowseFilters(),
+    val facetPicker: FacetPickerUi? = null,
+    val catalog: CatalogUi = CatalogUi(),
+    val detail: WorkDetail? = null,
+    val detailLoading: Boolean = false,
+    val message: String? = null,
+    val restoring: Boolean = false,
+    val clearingCoverCache: Boolean = false,
+)
+
+data class FacetPickerUi(
+    val source: SourceId,
+    val kind: FacetKind,
+    val options: List<FacetValue> = emptyList(),
+    val discoveredCount: Int = 0,
+    val upstreamCount: Int = 0,
+    val loading: Boolean = false,
+    val error: String? = null,
+)
+
+class MainViewModel(application: Application) : AndroidViewModel(application) {
+    private val app = application as OtohaApplication
+    val store = app.store
+    val player = PlayerConnection(application, store)
+    private val mutableState = MutableStateFlow(MainUi())
+    val state = mutableState.asStateFlow()
+    private val catalogs = mutableMapOf<CatalogKey, CatalogUi>()
+    private val knownWorks = mutableMapOf<String, WorkSummary>()
+    private val facetCache = mutableMapOf<Pair<SourceId, FacetKind>, List<FacetValue>>()
+    private var facetJob: Job? = null
+    private var facetGeneration = 0
+    private val browseRequests = CatalogRequestGate()
+    private var browseJob: Job? = null
+    private var detailJob: Job? = null
+    private var detailSource: SourceId? = null
+    private var restoreJob: Job? = null
+    private var restoreSource: SourceId? = null
+    private var asmrOneRevision = 0
+    private var restoreGeneration = 0
+
+    private fun revision(source: SourceId): Int = if (source == SourceId.ASMR_ONE) asmrOneRevision else 0
+
+    init {
+        rememberWorks(store.data.value.favorites + store.data.value.recent)
+        loadMore()
+    }
+
+    private fun selection(): CatalogSelection = CatalogSelection(state.value.source, state.value.category, state.value.filters)
+
+    fun selectSource(source: SourceId) {
+        if (source == state.value.source) return
+        switchCatalog(CatalogSelection(source))
+    }
+    fun selectCategory(category: String) {
+        if (category !in listOf("allages", "boys", "girls")) return
+        if (category != "allages" && !store.data.value.showRestricted) return
+        if (category == state.value.category) return
+        switchCatalog(CatalogSelection(SourceId.ASMR18, category))
+    }
+    private fun switchCatalog(next: CatalogSelection, resetPage: Boolean = false) {
+        browseJob?.cancel()
+        browseRequests.invalidate()
+        closeFacetPicker()
+        val old = state.value
+        catalogs[selection().key] = old.catalog.copy(loading = false)
+        if (resetPage) catalogs.remove(next.key)
+        mutableState.value = state.value.copy(source = next.source, category = next.category, filters = next.filters,
+            catalog = catalogs[next.key] ?: CatalogUi(), message = null)
+        if (state.value.catalog.page == 0) loadMore()
+    }
+    fun selectFacet(value: FacetValue) {
+        closeDetail()
+        switchCatalog(selection().withFacet(value), resetPage = true)
+    }
+    fun selectDetailFacet(value: FacetValue) {
+        closeDetail()
+        switchCatalog(CatalogSelection(value.source).withFacet(value), resetPage = true)
+    }
+    fun removeFacet(kind: FacetKind) = switchCatalog(selection().without(kind), resetPage = true)
+    fun clearFacets() = switchCatalog(selection().cleared(), resetPage = true)
+    fun loadMore(refresh: Boolean = false) {
+        if (state.value.catalog.loading) return
+        val source = state.value.source
+        val key = selection().key
+        val filters = state.value.filters
+        val requestRevision = revision(source)
+        val requestToken = browseRequests.begin(key, requestRevision)
+        val client = app.source(source)
+        val category = state.value.category
+        val old = if (refresh) CatalogUi() else state.value.catalog
+        if (!refresh && !old.hasMore) return
+        mutableState.value = state.value.copy(catalog = old.copy(loading = true, error = null))
+        browseJob = viewModelScope.launch {
+            try {
+                val result = client.filteredBrowse(old.page + 1, category, filters)
+                if (!browseRequests.accepts(requestToken, selection().key, revision(source))) return@launch
+                rememberWorks(result.works)
+                mutableState.value = state.value.copy(catalog = CatalogUi(
+                    works = (old.works + result.works).distinctBy { it.ref.key },
+                    page = result.page, hasMore = result.hasMore))
+            } catch (cancel: CancellationException) { throw cancel
+            } catch (error: Exception) {
+                if (browseRequests.accepts(requestToken, selection().key, revision(source)))
+                    mutableState.value = state.value.copy(catalog = old.copy(error = error.message ?: "加载失败，请重试"))
+            }
+        }
+    }
+    private fun rememberWorks(works: List<WorkSummary>) {
+        works.forEach { incoming ->
+            knownWorks[incoming.ref.key] = FacetDiscovery.merge(knownWorks[incoming.ref.key], incoming)
+        }
+        state.value.facetPicker?.let { picker ->
+            mutableState.value = state.value.copy(facetPicker = pickerState(picker.source, picker.kind,
+                picker.loading, picker.error))
+        }
+    }
+    private fun discovered(source: SourceId, kind: FacetKind): List<FacetValue> =
+        knownWorks.values.filter { it.ref.source == source && visible(it) }.flatMap { it.facets }
+            .filter { it.source == source && it.kind == kind && it.queryValue.isNotBlank() }.distinctBy { it.key }
+
+    private fun pickerState(source: SourceId, kind: FacetKind, loading: Boolean, error: String? = null): FacetPickerUi {
+        val found = discovered(source, kind)
+        val remote = facetCache[source to kind].orEmpty()
+        val selected = state.value.filters.values.filter { it.source == source && it.kind == kind }
+        return FacetPickerUi(source, kind, (remote + found + selected).distinctBy { it.key }
+            .sortedBy { it.name.lowercase() }, found.size, remote.size, loading, error)
+    }
+    fun openFacetPicker(kind: FacetKind, reload: Boolean = false) {
+        facetJob?.cancel()
+        val generation = ++facetGeneration
+        val source = state.value.source
+        val requestRevision = revision(source)
+        val cached = facetCache.containsKey(source to kind)
+        mutableState.value = state.value.copy(facetPicker = pickerState(source, kind, !cached || reload))
+        if (cached && !reload) return
+        val client = app.source(source)
+        facetJob = viewModelScope.launch {
+            try {
+                val options = client.facetOptions(kind).filter {
+                    it.source == source && it.kind == kind && it.queryValue.isNotBlank()
+                }
+                if (generation != facetGeneration || revision(source) != requestRevision || state.value.source != source) return@launch
+                facetCache[source to kind] = options
+                mutableState.value = state.value.copy(facetPicker = pickerState(source, kind, false))
+            } catch (cancel: CancellationException) { throw cancel
+            } catch (error: Exception) {
+                if (generation == facetGeneration && revision(source) == requestRevision && state.value.source == source)
+                    mutableState.value = state.value.copy(facetPicker = pickerState(source, kind, false,
+                        error.message ?: "暂时无法加载站点选项"))
+            }
+        }
+    }
+    fun closeFacetPicker() {
+        facetGeneration++
+        facetJob?.cancel()
+        mutableState.value = state.value.copy(facetPicker = null)
+    }
+    fun open(work: WorkSummary) {
+        if (!visible(work)) { message("请先在设置中启用分级内容显示"); return }
+        open(work.ref)
+    }
+    private fun open(ref: WorkRef) {
+        detailJob?.cancel()
+        detailSource = ref.source
+        val requestRevision = revision(ref.source)
+        val client = app.source(ref.source)
+        mutableState.value = state.value.copy(detail = null, detailLoading = true)
+        detailJob = viewModelScope.launch {
+            try {
+                val result = client.detail(ref)
+                if (revision(ref.source) != requestRevision) return@launch
+                rememberWorks(listOf(result.summary))
+                if (!visible(result.summary)) {
+                    mutableState.value = state.value.copy(detailLoading = false)
+                    message("此作品的分级信息不在当前显示范围内")
+                } else mutableState.value = state.value.copy(detail = result, detailLoading = false)
+            } catch (cancel: CancellationException) { throw cancel
+            } catch (error: Exception) {
+                if (revision(ref.source) == requestRevision)
+                    mutableState.value = state.value.copy(detailLoading = false,
+                        message = error.message ?: "作品加载失败，请重试")
+            }
+        }
+    }
+    fun openLink(raw: String) {
+        val uri = runCatching { URI(raw.trim()) }.getOrNull()
+        val path = uri?.path?.lowercase().orEmpty()
+        if (uri?.scheme != "https" || uri.host != "asmr18.fans" || uri.userInfo != null || uri.port != -1 ||
+            !Regex("^/(allages|boys|girls)/rj(?:[0-9]{6}|[0-9]{8})/$").matches(path)) {
+            message("请输入 https://asmr18.fans/分类/rj作品号/ 格式的作品链接"); return
+        }
+        if (!path.startsWith("/allages/") && !store.data.value.showRestricted) {
+            message("请先在设置中启用分级内容显示"); return
+        }
+        open(WorkRef(SourceId.ASMR18, path.trim('/'), "https://asmr18.fans$path"))
+    }
+    fun closeDetail() {
+        detailJob?.cancel()
+        detailSource = null
+        mutableState.value = state.value.copy(detail = null, detailLoading = false)
+    }
+    fun play(detail: WorkDetail, track: AudioTrack) {
+        if (visible(detail.summary)) {
+            restoreGeneration++
+            restoreJob?.cancel()
+            restoreSource = null
+            mutableState.value = state.value.copy(restoring = false)
+            player.play(detail, track)
+        }
+    }
+    fun setRestricted(enabled: Boolean) {
+        store.setRestricted(enabled)
+        if (!enabled) {
+            if (state.value.detail?.summary?.let { !visible(it) } == true) closeDetail()
+            if (player.state.value.work?.let { !visible(it) } == true) player.clear()
+            if (state.value.category != "allages") switchCatalog(CatalogSelection(state.value.source, "allages", state.value.filters))
+        }
+    }
+    fun restore(snapshot: PlaybackSnapshot, continuationToken: String? = null, isContinuation: Boolean = false) {
+        if (!visible(snapshot.work) || state.value.restoring || !player.state.value.connected) return
+        mutableState.value = state.value.copy(restoring = true)
+        val requestRevision = revision(snapshot.work.ref.source)
+        val client = app.source(snapshot.work.ref.source)
+        val generation = ++restoreGeneration
+        restoreSource = snapshot.work.ref.source
+        restoreJob = viewModelScope.launch {
+            try {
+                val refreshed = client.detail(snapshot.work.ref)
+                if (revision(snapshot.work.ref.source) != requestRevision) return@launch
+                if (!visible(refreshed.summary)) error("此作品不在当前分级显示范围内")
+                val tracks = snapshot.tracks.map { old ->
+                    refreshed.tracks.singleOrNull { it.id == old.id && it.directory == old.directory }
+                        ?: error("原队列中的曲目已变化，请打开作品重新选择版本")
+                }
+                if (snapshot.index !in tracks.indices) error("播放记录不完整，请重新选择曲目")
+                if (isContinuation && player.recordingToken() != continuationToken)
+                    error("当前播放已变化，请重新选择曲目")
+                player.play(refreshed.summary, tracks, snapshot.index, snapshot.positionMs, snapshot.speed,
+                    continuationToken, isContinuation)
+            } catch (cancel: CancellationException) { throw cancel
+            } catch (error: Exception) {
+                if (revision(snapshot.work.ref.source) == requestRevision) message(error.message ?: "恢复播放失败，请打开作品重试")
+            } finally {
+                if (generation == restoreGeneration) {
+                    restoreSource = null
+                    mutableState.value = state.value.copy(restoring = false)
+                }
+            }
+        }
+    }
+    fun retryPlayback() {
+        val current = player.state.value
+        val work = current.work ?: return
+        if (current.tracks.isEmpty()) return
+        restore(PlaybackSnapshot(work, current.tracks, current.index, current.positionMs, current.speed),
+            continuationToken = player.recordingToken(), isContinuation = true)
+    }
+    fun setAsmrOneMirror(raw: String) {
+        try {
+            val normalized = MirrorSettings.normalize(raw)
+            if (normalized == store.data.value.asmrOneApiBaseUrl) return
+            store.setAsmrOneApiBaseUrl(normalized)
+            asmrOneRevision++
+            catalogs.keys.filter { it.source == SourceId.ASMR_ONE }.toList().forEach { catalogs.remove(it) }
+            facetCache.keys.filter { it.first == SourceId.ASMR_ONE }.toList().forEach { facetCache.remove(it) }
+            if (state.value.facetPicker?.source == SourceId.ASMR_ONE) closeFacetPicker()
+            if (detailSource == SourceId.ASMR_ONE) closeDetail()
+            if (restoreSource == SourceId.ASMR_ONE) {
+                restoreGeneration++
+                restoreJob?.cancel()
+                restoreSource = null
+                mutableState.value = state.value.copy(restoring = false)
+            }
+            if (state.value.source == SourceId.ASMR_ONE) {
+                browseRequests.invalidate()
+                browseJob?.cancel()
+                mutableState.value = state.value.copy(catalog = CatalogUi())
+                loadMore()
+            }
+            message("ASMR.one 镜像设置已应用")
+        } catch (error: Exception) { message(error.message ?: "无法保存镜像设置") }
+    }
+    @OptIn(coil.annotation.ExperimentalCoilApi::class)
+    fun clearCoverCache() {
+        if (state.value.clearingCoverCache) return
+        mutableState.value = state.value.copy(clearingCoverCache = true)
+        viewModelScope.launch {
+            try {
+                val loader = app.imageLoader
+                loader.memoryCache?.clear()
+                withContext(Dispatchers.IO) { loader.diskCache?.clear() }
+                message("封面缓存已清理")
+            } catch (cancel: CancellationException) { throw cancel
+            } catch (error: Exception) { message("清理失败：${error.message ?: "请稍后重试"}")
+            } finally { mutableState.value = state.value.copy(clearingCoverCache = false) }
+        }
+    }
+    fun visible(work: WorkSummary): Boolean = store.data.value.showRestricted || work.rating == ContentRating.GENERAL
+    fun message(text: String?) { mutableState.value = state.value.copy(message = text) }
+    override fun onCleared() { player.close(); super.onCleared() }
+}
