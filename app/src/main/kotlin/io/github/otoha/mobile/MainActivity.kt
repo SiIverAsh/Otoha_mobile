@@ -33,8 +33,13 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.HorizontalDivider
@@ -67,8 +72,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -521,14 +533,20 @@ private fun MiniPlayer(state: PlaybackUi, onOpen: () -> Unit, onToggle: () -> Un
 private fun PlayerScreen(state: PlaybackUi, player: PlayerConnection, incognito: Boolean,
     sleepDeadline: Long, onSleep: (Int) -> Unit, retrying: Boolean, onRetry: () -> Unit,
     modifier: Modifier = Modifier) {
-    var dragging by remember { mutableStateOf(false) }
-    var slider by remember { mutableFloatStateOf(0f) }
+    var dragging by remember(state.work?.ref, state.track?.id) { mutableStateOf(false) }
+    var slider by remember(state.work?.ref, state.track?.id) { mutableFloatStateOf(0f) }
+    var queueOpen by rememberSaveable(state.work?.ref?.key) { mutableStateOf(false) }
+    var chaptersOpen by rememberSaveable(state.work?.ref?.key, state.track?.id) { mutableStateOf(false) }
     Column(modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text(if (incognito) "正在播放 · 无痕" else "正在播放", style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary)
-        Text(state.track?.title.orEmpty(), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-        Text(state.work?.title.orEmpty(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+        verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(if (incognito) "正在播放 · 无痕" else "正在播放", style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(state.track?.title.orEmpty(), style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(state.work?.title.orEmpty(), style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
         if (state.buffering) LinearProgressIndicator(Modifier.fillMaxWidth())
         if (state.error != null) {
             Text(state.error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -538,53 +556,111 @@ private fun PlayerScreen(state: PlaybackUi, player: PlayerConnection, incognito:
         }
         if (state.track?.subtitle != null) Surface(color = MaterialTheme.colorScheme.surfaceContainer,
             shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
-            Text(SubtitleDisplay.content(state.subtitleText, state.subtitleLoading, state.subtitleError), Modifier.padding(20.dp),
+            Text(SubtitleDisplay.content(state.subtitleText, state.subtitleLoading, state.subtitleError), Modifier.padding(16.dp),
                 style = MaterialTheme.typography.bodyLarge)
         }
         Column {
-            Slider(value = if (dragging) slider else if (state.durationMs > 0) state.positionMs.toFloat() / state.durationMs else 0f,
+            Slider(value = if (dragging) slider else if (state.durationMs > 0)
+                (state.positionMs.toFloat() / state.durationMs).coerceIn(0f, 1f) else 0f,
                 enabled = state.durationMs > 0,
+                modifier = Modifier.semantics { contentDescription = "播放进度" },
                 onValueChange = { dragging = true; slider = it },
                 onValueChangeFinished = { player.seek((slider * state.durationMs).toLong()); dragging = false })
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(time(if (dragging) (slider * state.durationMs).toLong() else state.positionMs), style = MaterialTheme.typography.labelSmall)
-                Text(time(state.durationMs), style = MaterialTheme.typography.labelSmall)
+                Text(time(if (dragging) (slider * state.durationMs).toLong() else state.positionMs),
+                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(time(state.durationMs), style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = player::previous, enabled = state.index > 0) { Text("上一曲") }
-            Button(onClick = player::toggle) { Text(if (state.playing || state.buffering) "暂停" else "播放") }
-            TextButton(onClick = player::next, enabled = state.index < state.tracks.lastIndex) { Text("下一曲") }
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            listOf(.75f, 1f, 1.25f, 1.5f, 2f).forEach { speed ->
-                FilterChip(selected = state.speed == speed, onClick = { player.speed(speed) }, label = { Text("${speed}×") })
+            IconButton(onClick = player::previous, enabled = state.index > 0) {
+                Icon(painterResource(R.drawable.ic_player_previous), contentDescription = "上一曲")
+            }
+            FilledIconButton(onClick = player::toggle, modifier = Modifier.size(64.dp)) {
+                Icon(painterResource(if (state.playing || state.buffering) R.drawable.ic_player_pause else R.drawable.ic_player_play),
+                    contentDescription = if (state.playing || state.buffering) "暂停" else "播放", modifier = Modifier.size(30.dp))
+            }
+            IconButton(onClick = player::next, enabled = state.index < state.tracks.lastIndex) {
+                Icon(painterResource(R.drawable.ic_player_next), contentDescription = "下一曲")
             }
         }
-        Text(if (sleepDeadline > 0) "睡眠定时 · 约 ${(sleepDeadline - SystemClock.elapsedRealtime()).coerceAtLeast(0) / 60_000 + 1} 分钟后暂停"
-            else "睡眠定时", style = MaterialTheme.typography.titleSmall)
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(0, 15, 30, 60).forEach { minutes ->
-                OutlinedButton(onClick = { onSleep(minutes) }) { Text(if (minutes == 0) "关闭" else "$minutes 分钟") }
-            }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PlayerOptionMenu(label = "${state.speed.toString().removeSuffix(".0")}×", description = "播放速度",
+                selected = state.speed, options = listOf(.75f to "0.75×", 1f to "1×", 1.25f to "1.25×", 1.5f to "1.5×", 2f to "2×"),
+                onSelect = player::speed, modifier = Modifier.weight(1f))
+            val remainingMinutes = if (sleepDeadline > 0)
+                ((sleepDeadline - SystemClock.elapsedRealtime()).coerceAtLeast(0) + 59_999) / 60_000 else 0
+            PlayerOptionMenu(label = if (sleepDeadline > 0) "约 $remainingMinutes 分钟" else "定时",
+                description = "睡眠定时", selected = if (sleepDeadline == 0L) 0 else null,
+                options = listOf(0 to "关闭定时", 15 to "15 分钟", 30 to "30 分钟", 60 to "60 分钟"),
+                onSelect = onSleep, modifier = Modifier.weight(1f))
         }
         state.track?.chapters?.takeIf { it.isNotEmpty() }?.let { chapters ->
-            Text("章节", style = MaterialTheme.typography.titleMedium)
-            chapters.forEach { chapter ->
-                Row(Modifier.fillMaxWidth().clickable { player.seek(chapter.startMs) }.padding(vertical = 8.dp)) {
-                    Text(chapter.title, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-                    Text(time(chapter.startMs), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            PlayerSectionHeader("章节", "${chapters.size}", chaptersOpen, { chaptersOpen = !chaptersOpen })
+            if (chaptersOpen) chapters.forEach { chapter ->
+                Row(Modifier.fillMaxWidth().clickable { player.seek(chapter.startMs) }
+                    .heightIn(min = 48.dp).padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text(chapter.title, Modifier.weight(1f).padding(end = 12.dp), style = MaterialTheme.typography.bodyMedium)
+                    Text(time(chapter.startMs), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
         HorizontalDivider()
-        Text("当前队列 · ${state.tracks.size} 曲", style = MaterialTheme.typography.titleMedium)
-        state.tracks.forEachIndexed { index, track ->
-            Text("${if (index == state.index) "▸" else "${index + 1}."}  ${track.title}",
-                Modifier.fillMaxWidth().clickable { player.select(index) }.padding(vertical = 8.dp),
-                color = if (index == state.index) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                style = MaterialTheme.typography.bodyMedium)
+        PlayerSectionHeader("播放队列", "${if (state.tracks.isEmpty()) 0 else state.index + 1} / ${state.tracks.size}",
+            queueOpen, { queueOpen = !queueOpen })
+        if (queueOpen) state.tracks.forEachIndexed { index, track ->
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                .background(if (index == state.index) MaterialTheme.colorScheme.surfaceContainer else Color.Transparent)
+                .clickable { player.select(index) }.semantics { selected = index == state.index }
+                .heightIn(min = 48.dp).padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("${index + 1}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(track.title, Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    color = if (index == state.index) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    style = MaterialTheme.typography.bodyMedium)
+            }
         }
+    }
+}
+
+@Composable
+private fun <T> PlayerOptionMenu(label: String, description: String, selected: T?, options: List<Pair<T, String>>,
+    onSelect: (T) -> Unit, modifier: Modifier = Modifier) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(modifier) {
+        TextButton(onClick = { expanded = true }, contentPadding = PaddingValues(horizontal = 12.dp),
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics {
+                contentDescription = description
+                stateDescription = label
+            }) {
+            Text(label, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.labelLarge,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Icon(painterResource(R.drawable.ic_player_expand), contentDescription = null,
+                modifier = Modifier.padding(start = 4.dp).size(16.dp))
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.forEach { (value, title) ->
+                DropdownMenuItem(text = { Text(title) }, onClick = { expanded = false; onSelect(value) },
+                    modifier = Modifier.semantics { this.selected = selected == value },
+                    trailingIcon = { if (selected == value) Text("✓", color = MaterialTheme.colorScheme.primary) })
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlayerSectionHeader(title: String, detail: String, expanded: Boolean, onToggle: () -> Unit) {
+    TextButton(onClick = onToggle, contentPadding = PaddingValues(horizontal = 12.dp),
+        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics {
+            stateDescription = if (expanded) "已展开" else "已折叠"
+        }) {
+        Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface)
+        Text(detail, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Icon(painterResource(R.drawable.ic_player_expand), contentDescription = null,
+            modifier = Modifier.padding(start = 8.dp).size(18.dp).rotate(if (expanded) 180f else 0f))
     }
 }
 

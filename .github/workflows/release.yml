@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'New release tag matching the APK version, e.g. v0.2.0'
+        description: 'New release tag matching the APK version, e.g. v0.2.1'
         type: string
         required: true
-        default: v0.2.0
+        default: v0.2.1
       prerelease:
         description: Mark this release as a prerelease
         type: boolean
