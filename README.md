@@ -2,7 +2,7 @@
 
 直接连接 ASMR.one 和 [ASMR18](https://asmr18.fans) 的原生 Android 前端，无需电脑、NAS 或 Go 服务。Kotlin、Jetpack Compose、Media3；Android 8.0（API 26）及以上。
 
-当前版本 **0.2.1**。安装包从 [GitHub Releases](https://github.com/SiIverAsh/Otoha_mobile/releases) 下载，由手动触发的 GitHub Actions 构建、签名和发布。开发阶段采用预发布版本；新版本覆盖安装沿用已有签名，保留手机个人数据。
+最新版本及安装包见 [GitHub Releases](https://github.com/SiIverAsh/Otoha_mobile/releases)。在 GitHub Actions 手动选择补丁（patch）、小版本（minor）或大版本（major），即可自动递增版本、构建、签名并发布，无需填写 tag。开发阶段采用预发布版本；新版本覆盖安装沿用已有签名，保留手机个人数据。
 
 ## 使用
 

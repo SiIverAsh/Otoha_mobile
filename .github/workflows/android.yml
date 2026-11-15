@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Test release version increments
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

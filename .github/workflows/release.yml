@@ -3,11 +3,15 @@ name: Release Android
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'New release tag matching the APK version, e.g. v0.2.1'
-        type: string
+      bump:
+        description: '版本递增：patch 补丁 / minor 小版本 / major 大版本'
+        type: choice
         required: true
-        default: v0.2.1
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
       prerelease:
         description: Mark this release as a prerelease
         type: boolean
@@ -18,35 +22,57 @@ permissions:
   contents: read
 
 concurrency:
-  group: android-release-${{ inputs.tag }}
+  group: android-release
   cancel-in-progress: false
 
 jobs:
   validate:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    env:
-      TAG: ${{ inputs.tag }}
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version_name: ${{ steps.version.outputs.version_name }}
+      version_code: ${{ steps.version.outputs.version_code }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Validate tag and committed release notes
+      - name: Calculate the next release version
+        id: version
+        env:
+          RELEASE_BUMP: ${{ inputs.bump }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo 'Tag must match vX.Y.Z' >&2
-            exit 1
-          fi
-          test -s "docs/releases/$TAG.md"
-      - name: Refuse an existing tag or release
+          python3 scripts/bump-release-version.py "$RELEASE_BUMP" >> "$GITHUB_OUTPUT"
+      - name: Validate the release base and refuse an existing version
         uses: actions/github-script@v7
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          CURRENT_VERSION: ${{ steps.version.outputs.current_version }}
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
+            const branch = context.payload.repository.default_branch;
+            if (context.ref !== `refs/heads/${branch}`) {
+              throw new Error('Run releases from the default branch');
+            }
+            const head = await github.rest.git.getRef({owner, repo, ref: `heads/${branch}`});
+            if (head.data.object.sha !== context.sha) {
+              throw new Error('The branch advanced; start a new release run from its latest commit');
+            }
+            const current = process.env.CURRENT_VERSION.split('.').map(Number);
+            const compare = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+            // Include prereleases: /releases/latest excludes development releases.
+            const releases = await github.paginate(github.rest.repos.listReleases, {owner, repo, per_page: 100});
+            for (const release of releases) {
+              const match = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.exec(release.tag_name);
+              if (!release.draft && match && compare(match.slice(1).map(Number), current) > 0) {
+                throw new Error(`Source version is behind ${release.tag_name}; synchronize the version and versionCode first`);
+              }
+            }
             const tag = process.env.TAG;
             for (const [lookup, message] of [
               [() => github.rest.git.getRef({owner, repo, ref: `tags/${tag}`}), 'Tag already exists'],
@@ -69,6 +95,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Apply the release version
+        env:
+          RELEASE_BUMP: ${{ inputs.bump }}
+        run: python3 scripts/bump-release-version.py "$RELEASE_BUMP"
+      - name: Test release version increments
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -92,7 +124,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: release-check-reports-${{ inputs.tag }}
+          name: release-check-reports-${{ needs.validate.outputs.tag }}
           path: |
             core/build/reports/
             core/build/test-results/
@@ -110,6 +142,10 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Apply the release version
+        env:
+          RELEASE_BUMP: ${{ inputs.bump }}
+        run: python3 scripts/bump-release-version.py "$RELEASE_BUMP"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -172,7 +208,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: android-regression-reports-${{ inputs.tag }}
+          name: android-regression-reports-${{ needs.validate.outputs.tag }}
           path: |
             app/build/reports/androidTests/
             app/build/outputs/androidTest-results/
@@ -187,12 +223,17 @@ jobs:
     permissions:
       contents: write
     env:
-      TAG: ${{ inputs.tag }}
+      TAG: ${{ needs.validate.outputs.tag }}
+      VERSION_CODE: ${{ needs.validate.outputs.version_code }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Apply the release version
+        env:
+          RELEASE_BUMP: ${{ inputs.bump }}
+        run: python3 scripts/bump-release-version.py "$RELEASE_BUMP"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -240,8 +281,9 @@ jobs:
           output = Path('app/build/outputs/apk/release').resolve()
           metadata = json.loads((output / 'output-metadata.json').read_text())
           elements = metadata.get('elements', [])
-          if len(elements) != 1 or elements[0].get('versionName') != tag[1:]:
-              raise SystemExit('Release tag does not match the APK output-metadata versionName')
+          if (len(elements) != 1 or elements[0].get('versionName') != tag[1:]
+                  or elements[0].get('versionCode') != int(os.environ['VERSION_CODE'])):
+              raise SystemExit('APK output-metadata does not match the calculated release version and versionCode')
           apk = (output / elements[0]['outputFile']).resolve()
           if apk.parent != output or apk.suffix != '.apk' or not apk.is_file():
               raise SystemExit('Unexpected release APK output path')
@@ -256,31 +298,70 @@ jobs:
         if: always() && steps.package.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: otoha-mobile-signed-${{ inputs.tag }}
+          name: otoha-mobile-signed-${{ needs.validate.outputs.tag }}
           path: dist/
           if-no-files-found: error
           retention-days: 14
-      - name: Create the new tag and GitHub Release
+      - name: Save the verified release version to the default branch
+        id: commit
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const branch = context.payload.repository.default_branch;
+            if (context.ref !== `refs/heads/${branch}`) {
+              throw new Error('Run releases from the default branch');
+            }
+            const head = await github.rest.git.getRef({owner, repo, ref: `heads/${branch}`});
+            if (head.data.object.sha !== context.sha) {
+              throw new Error('The branch advanced during checks; start a new release run');
+            }
+            const base = await github.rest.git.getCommit({owner, repo, commit_sha: context.sha});
+            const tree = await github.rest.git.createTree({
+              owner, repo, base_tree: base.data.tree.sha,
+              tree: [{path: 'app/build.gradle.kts', mode: '100644', type: 'blob',
+                content: fs.readFileSync('app/build.gradle.kts', 'utf8')}],
+            });
+            const commit = await github.rest.git.createCommit({
+              owner, repo, message: `Release ${process.env.TAG}`,
+              tree: tree.data.sha, parents: [context.sha],
+            });
+            // A concurrent push makes this non-fast-forward and is rejected.
+            await github.rest.git.updateRef({
+              owner, repo, ref: `heads/${branch}`, sha: commit.data.sha, force: false,
+            });
+            core.setOutput('sha', commit.data.sha);
+      - name: Publish the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           PRERELEASE: ${{ inputs.prerelease }}
+          RELEASE_SHA: ${{ steps.commit.outputs.sha }}
         shell: bash
         run: |
           set -euo pipefail
           # Creating a new ref atomically fails if somebody created this tag during checks.
           # Never update an existing ref or overwrite an existing release/asset.
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-            -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" --silent
+            -f ref="refs/tags/$TAG" -f sha="$RELEASE_SHA" --silent
           flags=()
           if [[ "$PRERELEASE" == 'true' ]]; then flags+=(--prerelease); fi
+          if [[ -s "docs/releases/$TAG.md" ]]; then
+            flags+=(--notes-file "docs/releases/$TAG.md")
+          else
+            flags+=(--generate-notes)
+          fi
           gh release create "$TAG" "dist/Otoha-Mobile-$TAG.apk" dist/SHA256SUMS \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --verify-tag \
-            --title "Otoha Mobile $TAG" --notes-file "docs/releases/$TAG.md" "${flags[@]}"
+            --repo "$GITHUB_REPOSITORY" --target "$RELEASE_SHA" --verify-tag \
+            --title "Otoha Mobile $TAG" "${flags[@]}"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url \
+            >> "$GITHUB_STEP_SUMMARY"
       - name: Upload release diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: release-build-diagnostics-${{ inputs.tag }}
+          name: release-build-diagnostics-${{ needs.validate.outputs.tag }}
           path: |
             app/build/outputs/apk/release/output-metadata.json
             app/build/reports/
