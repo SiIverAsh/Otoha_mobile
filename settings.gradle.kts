@@ -28,6 +28,12 @@ dependencyResolutionManagement {
             }
         }
         mavenCentral()
+        maven {
+            name = "robolectricSdkMirror"
+            url = uri("https://maven-central.storage-download.googleapis.com/maven2")
+            content { includeModule("org.robolectric", "android-all-instrumented") }
+            metadataSources { artifact() }
+        }
     }
 }
 rootProject.name = "OtohaMobile"
