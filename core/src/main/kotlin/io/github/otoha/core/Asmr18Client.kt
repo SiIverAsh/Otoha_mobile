@@ -1,5 +1,7 @@
 package io.github.otoha.core
 
+import java.net.URLEncoder
+
 /** Public-page adapter; adapted from SiIverAsh/Otoha internal/asmr18 (GPL-3.0). */
 class Asmr18Client(
     http: SourceHttp = SourceHttp(),
@@ -22,6 +24,15 @@ class Asmr18Client(
         // Taxonomy archives can mix age categories. Preserve every work's source category;
         // the app's rating policy filters display independently of archive pagination.
         return Asmr18Parser.parseFacetCatalog(facet, page, request(url, source))
+    }
+
+    override suspend fun search(keyword: String, page: Int): CatalogPage {
+        require(page >= 1) { "页码必须大于 0" }
+        val query = keyword.trim()
+        require(query.isNotEmpty()) { "请输入有效的搜索关键词" }
+        val path = if (page == 1) "/" else "/page/$page/"
+        val url = "${Asmr18Parser.baseUrl}$path?s=${URLEncoder.encode(query, "UTF-8")}"
+        return Asmr18Parser.parseSearch(page, request(url, source), url)
     }
 
     override suspend fun facetOptions(kind: FacetKind): List<FacetValue> {

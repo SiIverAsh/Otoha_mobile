@@ -23,10 +23,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -63,6 +68,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -76,12 +82,14 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -128,6 +136,16 @@ private fun OtohaApp(vm: MainViewModel = viewModel()) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var playerOpen by rememberSaveable { mutableStateOf(false) }
     var linkOpen by rememberSaveable { mutableStateOf(false) }
+    var searchOpen by rememberSaveable { mutableStateOf(false) }
+    var searchDraft by rememberSaveable { mutableStateOf("") }
+    var searchSource by rememberSaveable { mutableStateOf(SourceId.ASMR_ONE) }
+    // Keep list state alive while the detail screen replaces the list.
+    val catalogListState = key(state.source, state.category, state.filters, state.catalog.page) { rememberLazyListState() }
+    val searchListStates = SourceId.entries.associateWith { source ->
+        key(source, state.search.keyword, state.search.pages[source]?.page) { rememberLazyListState() }
+    }
+    val favoritesListState = rememberLazyListState()
+    val recentListState = rememberLazyListState()
     val snackbar = remember { SnackbarHostState() }
     val inDetail = state.detail != null || state.detailLoading
     val active = playback.work?.takeIf(vm::visible)
@@ -135,6 +153,7 @@ private fun OtohaApp(vm: MainViewModel = viewModel()) {
     LaunchedEffect(state.message) {
         state.message?.let { snackbar.showSnackbar(it); vm.message(null) }
     }
+    BackHandler(searchOpen && !inDetail) { searchOpen = false }
     BackHandler(inDetail) { vm.closeDetail() }
 
     Scaffold(
@@ -142,12 +161,24 @@ private fun OtohaApp(vm: MainViewModel = viewModel()) {
             Column {
             TopAppBar(title = {
                 Column {
-                    Text(if (inDetail) "作品详情" else "Otoha", fontWeight = FontWeight.SemiBold)
-                    if (!inDetail) Text(if (incognito) "无痕聆听中" else "为安静的片刻", style = MaterialTheme.typography.labelMedium,
+                    Text(when {
+                        inDetail -> "作品详情"
+                        searchOpen -> "全局搜索"
+                        else -> "Otoha"
+                    }, fontWeight = FontWeight.SemiBold)
+                    if (!inDetail && !searchOpen) Text(if (incognito) "无痕聆听中" else "为安静的片刻", style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.secondary)
                 }
-            }, navigationIcon = { if (inDetail) TextButton(onClick = vm::closeDetail) { Text("‹ 返回") } },
-                actions = { if (!inDetail && tab == 0) TextButton(onClick = { linkOpen = true }) { Text("打开链接") } },
+            }, navigationIcon = {
+                if (inDetail || searchOpen) {
+                    TextButton(onClick = { if (inDetail) vm.closeDetail() else searchOpen = false }) { Text("‹ 返回") }
+                }
+            }, actions = {
+                if (!inDetail && !searchOpen) {
+                    TextButton(onClick = { searchOpen = true }) { Text("全局搜索") }
+                    if (tab == 0) TextButton(onClick = { linkOpen = true }) { Text("打开链接") }
+                }
+            },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background))
             if (!playback.connected && playback.error != null) Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp),
                 verticalAlignment = Alignment.CenterVertically) {
@@ -162,8 +193,9 @@ private fun OtohaApp(vm: MainViewModel = viewModel()) {
                 if (active != null) MiniPlayer(playback, onOpen = { playerOpen = true }, onToggle = vm.player::toggle)
                 NavigationBar(containerColor = MaterialTheme.colorScheme.background) {
                     listOf("发现" to "◉", "收藏" to "♡", "最近" to "◷", "设置" to "☷").forEachIndexed { index, item ->
-                        NavigationBarItem(selected = tab == index && !inDetail,
-                            onClick = { vm.closeDetail(); tab = index }, icon = { Text(item.second) }, label = { Text(item.first) })
+                        NavigationBarItem(selected = tab == index && !inDetail && !searchOpen,
+                            onClick = { vm.closeDetail(); searchOpen = false; tab = index },
+                            icon = { Text(item.second) }, label = { Text(item.first) })
                     }
                 }
             }
@@ -176,13 +208,18 @@ private fun OtohaApp(vm: MainViewModel = viewModel()) {
                     favorite = personal.favorites.any { it.ref.key == state.detail!!.summary.ref.key },
                     connected = playback.connected,
                     onFavorite = { vm.store.toggleFavorite(state.detail!!.summary) },
-                    onFacet = { vm.selectDetailFacet(it); tab = 0 },
+                    onFacet = { vm.selectDetailFacet(it); searchOpen = false; tab = 0 },
                     onPlay = { vm.play(state.detail!!, it); playerOpen = true })
-                tab == 0 -> CatalogScreen(state, personal.showRestricted, vm::selectSource, vm::selectCategory,
-                    vm::open, { vm.loadMore() }, { vm.loadMore(refresh = true) },
+                searchOpen -> SearchScreen(state.search, searchListStates.getValue(searchSource), personal.showRestricted, searchDraft,
+                    { searchDraft = it }, vm::search, searchSource, { searchSource = it },
+                    { vm.loadSearchPage(searchSource, it) }, vm::open, { searchOpen = false; tab = 3 })
+                tab == 0 -> CatalogScreen(state, catalogListState, personal.showRestricted, vm::selectSource, vm::selectCategory,
+                    vm::open, vm::loadCatalogPage,
                     { vm.openFacetPicker(it) }, vm::removeFacet, vm::clearFacets, { tab = 3 })
-                tab == 1 -> LocalWorks("收藏", personal.favorites.filter(vm::visible), "把喜欢的作品留在这里", vm::open)
-                tab == 2 -> LocalWorks("最近收听", personal.recent.filter(vm::visible), "开始播放后会在这里留下记录", vm::open,
+                tab == 1 -> LocalWorks("收藏", personal.favorites.filter(vm::visible), "把喜欢的作品留在这里",
+                    favoritesListState, vm::open)
+                tab == 2 -> LocalWorks("最近收听", personal.recent.filter(vm::visible), "开始播放后会在这里留下记录",
+                    recentListState, vm::open,
                     leading = {
                         personal.snapshot?.takeIf { vm.visible(it.work) }?.let { snapshot ->
                             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
@@ -222,16 +259,16 @@ private fun OtohaApp(vm: MainViewModel = viewModel()) {
 
 @Composable
 private fun CatalogScreen(
-    state: MainUi, restricted: Boolean,
+    state: MainUi, listState: LazyListState, restricted: Boolean,
     onSource: (SourceId) -> Unit, onCategory: (String) -> Unit,
     onOpen: (WorkSummary) -> Unit,
-    onMore: () -> Unit, onRefresh: () -> Unit,
+    onPage: (Int) -> Unit,
     onPickFacet: (FacetKind) -> Unit, onRemoveFacet: (FacetKind) -> Unit, onClearFacets: () -> Unit,
     onDisplaySettings: () -> Unit,
 ) {
-    val visibility = CatalogVisibility.from(state.catalog.works, restricted)
-    val works = visibility.visible
-    LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    PagedWorkList(state.catalog, listState, restricted, onOpen, onPage, onDisplaySettings,
+        if (state.filters.isEmpty) "音源暂未返回作品" else "音源没有返回符合当前条件的作品",
+        state.source.other(), onSource) {
         item {
             Text("发现好声音", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
             Text("按需浏览，选择喜欢的版本开始聆听。", Modifier.padding(top = 6.dp),
@@ -244,7 +281,8 @@ private fun CatalogScreen(
                 FilterChip(selected = state.source == SourceId.ASMR18,
                     onClick = { onSource(SourceId.ASMR18) }, label = { Text("ASMR18") })
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = onRefresh, enabled = !state.catalog.loading) { Text("刷新") }
+                TextButton(onClick = { onPage(state.catalog.page.coerceAtLeast(1)) },
+                    enabled = !state.catalog.loading) { Text("刷新") }
             }
         }
         item {
@@ -279,33 +317,129 @@ private fun CatalogScreen(
                 }
             }
         }
-        if (!restricted) item {
-            Text("当前仅显示已标注全年龄的作品", style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.secondary)
-        }
-        if (visibility.loadedCount > 0) item {
-            Column {
-                Text("已加载 ${visibility.loadedCount} 件 · 显示 ${works.size} 件 · 按显示设置隐藏 ${visibility.hiddenCount} 件",
-                    style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary)
-                if (visibility.hiddenCount > 0) TextButton(onClick = onDisplaySettings) { Text("调整分级显示设置") }
-            }
-        }
-        items(works, key = { it.ref.key }) { work -> WorkCard(work) { onOpen(work) } }
-        if (state.catalog.error != null) item {
-            ErrorCard(state.catalog.error, onMore)
-        } else if (state.catalog.loading) item {
-            Row(Modifier.fillMaxWidth().padding(18.dp), horizontalArrangement = Arrangement.Center) {
-                CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-            }
-        } else if (state.catalog.hasMore) item {
-            OutlinedButton(onClick = onMore, modifier = Modifier.fillMaxWidth()) {
-                Text(if (works.isEmpty() && visibility.hiddenCount > 0) "已加载作品被显示设置隐藏，继续加载" else "加载下一页")
-            }
-        } else if (works.isEmpty()) item {
-            EmptyState(if (visibility.hiddenCount > 0) "已加载的作品被分级设置隐藏，可调整设置后查看。"
-                else if (!state.filters.isEmpty) "音源没有返回符合当前条件的作品" else "音源暂未返回作品")
+    }
+}
+
+@Composable
+private fun SearchScreen(
+    search: SearchUi, listState: LazyListState, restricted: Boolean, draft: String, onDraft: (String) -> Unit,
+    onSearch: (String) -> Unit, source: SourceId, onSource: (SourceId) -> Unit,
+    onPage: (Int) -> Unit, onOpen: (WorkSummary) -> Unit, onDisplaySettings: () -> Unit,
+) {
+    val focus = LocalFocusManager.current
+    val submit = {
+        if (draft.isNotBlank()) {
+            focus.clearFocus()
+            onSearch(draft)
         }
     }
+    Column(Modifier.fillMaxSize()) {
+        Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(value = draft, onValueChange = onDraft, modifier = Modifier.weight(1f),
+                    singleLine = true, label = { Text("作品关键词") },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { submit() }))
+                Button(onClick = submit, enabled = draft.isNotBlank()) { Text("搜索") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SourceId.entries.forEach { option ->
+                    val status = search.pages[option]?.searchStatus(restricted)
+                    FilterChip(selected = source == option, onClick = { onSource(option) },
+                        modifier = Modifier.weight(1f), label = {
+                            Column(Modifier.padding(vertical = 4.dp)) {
+                                Text(option.displayName())
+                                status?.let {
+                                    Text(it, style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        })
+                }
+            }
+            if (search.keyword.isNotEmpty()) {
+                Text("“${search.keyword}”的搜索结果", style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        if (search.keyword.isEmpty()) {
+            Box(Modifier.padding(horizontal = 20.dp)) { EmptyState("输入关键词，同时搜索两个音源。") }
+        } else {
+            PagedWorkList(search.pages[source] ?: CatalogUi(), listState, restricted, onOpen, onPage,
+                onDisplaySettings, "此音源未找到相关作品", source.other(), onSource)
+        }
+    }
+}
+
+@Composable
+private fun PagedWorkList(
+    catalog: CatalogUi, listState: LazyListState, restricted: Boolean,
+    onOpen: (WorkSummary) -> Unit, onPage: (Int) -> Unit,
+    onDisplaySettings: () -> Unit, emptyMessage: String,
+    otherSource: SourceId, onSource: (SourceId) -> Unit, header: LazyListScope.() -> Unit = {},
+) {
+    val visibility = CatalogVisibility.from(catalog.works, restricted)
+    Column(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.weight(1f), state = listState, contentPadding = PaddingValues(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            header()
+            if (visibility.visible.isNotEmpty() && visibility.hiddenCount > 0) item {
+                Column {
+                    Text("本页显示 ${visibility.visible.size} 件 · 按分级设置隐藏 ${visibility.hiddenCount} 件",
+                        style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary)
+                    TextButton(onClick = onDisplaySettings) { Text("调整分级显示设置") }
+                }
+            }
+            items(visibility.visible, key = { it.ref.key }) { work -> WorkCard(work) { onOpen(work) } }
+            if (catalog.page > 0 && visibility.visible.isEmpty()) item {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    val hidden = visibility.hiddenCount
+                    Text(if (hidden > 0) "本页没有可显示的作品" else emptyMessage,
+                        style = MaterialTheme.typography.titleMedium)
+                    if (hidden > 0) {
+                        Text("分级设置隐藏了本页的 $hidden 件作品。",
+                            style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary)
+                    }
+                    if (catalog.hasMore) {
+                        Button(onClick = { onPage(catalog.page + 1) },
+                            enabled = catalog.canLoad(catalog.page + 1)) { Text("查看下一页") }
+                    }
+                    TextButton(onClick = { onSource(otherSource) }) { Text("查看 ${otherSource.displayName()}") }
+                    if (hidden > 0) TextButton(onClick = onDisplaySettings) { Text("调整分级显示设置") }
+                }
+            }
+            if (catalog.page == 0) catalog.request?.let { request ->
+                item { PageLoadStatus(request, onPage) }
+            }
+        }
+        if (catalog.page > 0) {
+            catalog.request?.let { PageLoadStatus(it, onPage) }
+            HorizontalDivider()
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { onPage(catalog.page - 1) },
+                    enabled = catalog.canLoad(catalog.page - 1)) { Text("上一页") }
+                Text("第 ${catalog.page} 页", style = MaterialTheme.typography.labelLarge)
+                TextButton(onClick = { onPage(catalog.page + 1) },
+                    enabled = catalog.canLoad(catalog.page + 1)) { Text("下一页") }
+            }
+        }
+    }
+}
+
+private fun SourceId.other(): SourceId = when (this) {
+    SourceId.ASMR_ONE -> SourceId.ASMR18
+    SourceId.ASMR18 -> SourceId.ASMR_ONE
+}
+
+private fun SourceId.displayName(): String = when (this) {
+    SourceId.ASMR_ONE -> "ASMR.one"
+    SourceId.ASMR18 -> "ASMR18"
+}
+
+@Composable
+private fun PageLoadStatus(request: CatalogUi.Request, onPage: (Int) -> Unit) {
+    if (request.error == null) LinearProgressIndicator(Modifier.fillMaxWidth())
+    else ErrorCard("第 ${request.page} 页加载失败 · ${request.error}") { onPage(request.page) }
 }
 
 @Composable
@@ -407,9 +541,10 @@ private fun DetailFacetChips(values: List<FacetValue>, onFacet: (FacetValue) -> 
 }
 
 @Composable
-private fun LocalWorks(title: String, works: List<WorkSummary>, empty: String, onOpen: (WorkSummary) -> Unit,
+private fun LocalWorks(title: String, works: List<WorkSummary>, empty: String,
+    listState: LazyListState, onOpen: (WorkSummary) -> Unit,
     leading: @Composable () -> Unit = {}) {
-    LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    LazyColumn(state = listState, contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold) }
         item { leading() }
         items(works, key = { it.ref.key }) { work -> WorkCard(work) { onOpen(work) } }
@@ -692,8 +827,9 @@ private fun EmptyState(text: String) {
 @Composable
 private fun ErrorCard(error: String, onRetry: () -> Unit) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(error, style = MaterialTheme.typography.bodyMedium)
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(error, Modifier.weight(1f), maxLines = 3, overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodyMedium)
             TextButton(onClick = onRetry) { Text("重试") }
         }
     }

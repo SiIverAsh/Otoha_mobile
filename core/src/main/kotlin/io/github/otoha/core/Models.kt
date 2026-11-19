@@ -80,6 +80,7 @@ data class CatalogPage(val works: List<WorkSummary>, val page: Int, val hasMore:
 interface SourceClient {
     val source: SourceId
     suspend fun browse(page: Int = 1, category: String = "allages"): CatalogPage
+    suspend fun search(keyword: String, page: Int = 1): CatalogPage
     suspend fun detail(ref: WorkRef): WorkDetail
     suspend fun filteredBrowse(page: Int = 1, category: String = "allages", filters: BrowseFilters = BrowseFilters()): CatalogPage {
         require(filters.isEmpty) { "此音源尚未接入远端筛选" }

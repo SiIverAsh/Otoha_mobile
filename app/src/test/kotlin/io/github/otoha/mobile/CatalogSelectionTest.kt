@@ -93,4 +93,31 @@ class CatalogSelectionTest {
         assertEquals(works, all.visible)
         assertEquals(0, all.hiddenCount)
     }
+
+    @Test fun `page navigation respects boundaries and allows the failed request to be retried`() {
+        val initial = CatalogUi()
+        assertTrue(initial.canLoad(1))
+        assertFalse(initial.canLoad(2))
+        val first = CatalogUi(page = 1, hasMore = true)
+        assertFalse(first.canLoad(0))
+        assertTrue(first.canLoad(2))
+        assertFalse(first.copy(request = CatalogUi.Request(2)).canLoad(2))
+        assertTrue(first.copy(request = CatalogUi.Request(2, "timeout")).canLoad(2))
+        val last = CatalogUi(page = 2)
+        assertTrue(last.canLoad(1))
+        assertFalse(last.canLoad(3))
+    }
+
+    @Test fun `search source reports loading failed empty and filtered pages distinctly`() {
+        val hiddenWork = WorkSummary(WorkRef(SourceId.ASMR_ONE, "1"), "作品", rating = ContentRating.RESTRICTED)
+        val firstPage = CatalogUi(page = 1)
+        assertEquals(null, CatalogUi().searchStatus(false))
+        assertEquals("搜索中", CatalogUi(request = CatalogUi.Request(1)).searchStatus(false))
+        assertEquals("无结果", firstPage.searchStatus(false))
+        assertEquals("本页已隐藏", firstPage.copy(works = listOf(hiddenWork)).searchStatus(false))
+        assertEquals("有结果", firstPage.copy(works = listOf(hiddenWork)).searchStatus(true))
+        assertEquals("有结果", firstPage.copy(works = listOf(hiddenWork.copy(rating = ContentRating.GENERAL))).searchStatus(false))
+        assertEquals("翻页中", firstPage.copy(request = CatalogUi.Request(2)).searchStatus(false))
+        assertEquals("加载失败", firstPage.copy(request = CatalogUi.Request(2, "timeout")).searchStatus(false))
+    }
 }

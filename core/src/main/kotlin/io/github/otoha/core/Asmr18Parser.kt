@@ -110,12 +110,23 @@ object Asmr18Parser {
     fun parseFacetCatalog(facet: FacetValue, page: Int, html: String): CatalogPage =
         parseCatalog(null, page, html, facetArchiveUrl(facet, page))
 
-    private fun parseCatalog(category: String?, page: Int, html: String, documentUrl: String): CatalogPage {
+    internal fun parseSearch(page: Int, html: String, documentUrl: String): CatalogPage =
+        parseCatalog(null, page, html, documentUrl, search = true)
+
+    private fun parseCatalog(
+        category: String?, page: Int, html: String, documentUrl: String, search: Boolean = false,
+    ): CatalogPage {
         rejectChallenge(html)
         val document = Jsoup.parse(html, documentUrl)
         val main = document.selectFirst("#main") ?: throw SourceException("ASMR18 分类页结构已变化，请稍后重试")
+        val results = if (search) {
+            if (document.body().hasClass("search-no-results")) return CatalogPage(emptyList(), page, false)
+            if (!document.body().hasClass("search-results"))
+                throw SourceException("ASMR18 未返回搜索结果页，请稍后重试")
+            main.selectFirst(".post-list") ?: throw SourceException("ASMR18 搜索结果页结构已变化，请稍后重试")
+        } else main
         val works = linkedMapOf<String, WorkSummary>()
-        for (anchor in main.select("a[href]")) {
+        for (anchor in results.select("a[href]")) {
             val url = runCatching { pageUrl(anchor.absUrl("href")) }.getOrNull() ?: continue
             val workRef = ref(url)
             val workCategory = workRef.id.substringBefore('/')
@@ -139,8 +150,9 @@ object Asmr18Parser {
                 rating = rating(workCategory),
             )
         }
-        if (works.isEmpty() && main.select(".no-results, .not-found").isEmpty()) {
-            throw SourceException("ASMR18 分类页没有可识别作品，页面结构可能已变化")
+        if (works.isEmpty() && (search || main.select(".no-results, .not-found").isEmpty())) {
+            val pageName = if (search) "搜索结果页" else "分类页"
+            throw SourceException("ASMR18 ${pageName}没有可识别作品，页面结构可能已变化")
         }
         val next = document.select("link[rel=next], a.nextpostslink, a.next.page-numbers").isNotEmpty()
         return CatalogPage(works.values.toList(), page, next)

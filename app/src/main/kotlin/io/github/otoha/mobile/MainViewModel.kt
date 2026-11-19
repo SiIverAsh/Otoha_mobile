@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import coil.imageLoader
 import io.github.otoha.core.AudioTrack
 import io.github.otoha.core.BrowseFilters
+import io.github.otoha.core.CatalogPage
 import io.github.otoha.core.ContentRating
 import io.github.otoha.core.FacetKind
 import io.github.otoha.core.FacetValue
@@ -18,6 +19,8 @@ import java.net.URI
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -26,9 +29,30 @@ import kotlinx.coroutines.withContext
 data class CatalogUi(
     val works: List<WorkSummary> = emptyList(),
     val page: Int = 0,
-    val hasMore: Boolean = true,
-    val loading: Boolean = false,
-    val error: String? = null,
+    val hasMore: Boolean = false,
+    val request: Request? = null,
+) {
+    data class Request(val page: Int, val error: String? = null)
+
+    val loading: Boolean get() = request != null && request.error == null
+
+    internal fun canLoad(target: Int): Boolean = !loading && target > 0 &&
+        (target == page || target == page - 1 || target == request?.page ||
+            (target == page + 1 && (page == 0 || hasMore)))
+
+    internal fun searchStatus(showRestricted: Boolean): String? = when {
+        request?.error != null -> "加载失败"
+        loading -> if (page == 0) "搜索中" else "翻页中"
+        page == 0 -> null
+        works.isEmpty() -> "无结果"
+        works.any { showRestricted || it.rating == ContentRating.GENERAL } -> "有结果"
+        else -> "本页已隐藏"
+    }
+}
+
+data class SearchUi(
+    val keyword: String = "",
+    val pages: Map<SourceId, CatalogUi> = emptyMap(),
 )
 
 data class MainUi(
@@ -37,6 +61,7 @@ data class MainUi(
     val filters: BrowseFilters = BrowseFilters(),
     val facetPicker: FacetPickerUi? = null,
     val catalog: CatalogUi = CatalogUi(),
+    val search: SearchUi = SearchUi(),
     val detail: WorkDetail? = null,
     val detailLoading: Boolean = false,
     val message: String? = null,
@@ -67,6 +92,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var facetGeneration = 0
     private val browseRequests = CatalogRequestGate()
     private var browseJob: Job? = null
+    private val searchJobs = mutableMapOf<SourceId, Job>()
     private var detailJob: Job? = null
     private var detailSource: SourceId? = null
     private var restoreJob: Job? = null
@@ -78,7 +104,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         rememberWorks(store.data.value.favorites + store.data.value.recent)
-        loadMore()
+        loadCatalogPage(1)
     }
 
     private fun selection(): CatalogSelection = CatalogSelection(state.value.source, state.value.category, state.value.filters)
@@ -98,11 +124,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         browseRequests.invalidate()
         closeFacetPicker()
         val old = state.value
-        catalogs[selection().key] = old.catalog.copy(loading = false)
+        catalogs[selection().key] = if (old.catalog.loading) old.catalog.copy(request = null) else old.catalog
         if (resetPage) catalogs.remove(next.key)
         mutableState.value = state.value.copy(source = next.source, category = next.category, filters = next.filters,
             catalog = catalogs[next.key] ?: CatalogUi(), message = null)
-        if (state.value.catalog.page == 0) loadMore()
+        if (state.value.catalog.page == 0) loadCatalogPage(1)
     }
     fun selectFacet(value: FacetValue) {
         closeDetail()
@@ -114,33 +140,63 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun removeFacet(kind: FacetKind) = switchCatalog(selection().without(kind), resetPage = true)
     fun clearFacets() = switchCatalog(selection().cleared(), resetPage = true)
-    fun loadMore(refresh: Boolean = false) {
-        if (state.value.catalog.loading) return
-        val source = state.value.source
-        val key = selection().key
-        val filters = state.value.filters
-        val requestRevision = revision(source)
-        val requestToken = browseRequests.begin(key, requestRevision)
+
+    fun loadCatalogPage(page: Int) {
+        val old = state.value.catalog
+        if (!old.canLoad(page)) return
+        val requestedSelection = selection()
+        val source = requestedSelection.source
+        val requestToken = browseRequests.begin(requestedSelection.key, revision(source))
         val client = app.source(source)
-        val category = state.value.category
-        val old = if (refresh) CatalogUi() else state.value.catalog
-        if (!refresh && !old.hasMore) return
-        mutableState.value = state.value.copy(catalog = old.copy(loading = true, error = null))
+        mutableState.value = state.value.copy(catalog = old.copy(request = CatalogUi.Request(page)))
         browseJob = viewModelScope.launch {
-            try {
-                val result = client.filteredBrowse(old.page + 1, category, filters)
-                if (!browseRequests.accepts(requestToken, selection().key, revision(source))) return@launch
-                rememberWorks(result.works)
-                mutableState.value = state.value.copy(catalog = CatalogUi(
-                    works = (old.works + result.works).distinctBy { it.ref.key },
-                    page = result.page, hasMore = result.hasMore))
-            } catch (cancel: CancellationException) { throw cancel
-            } catch (error: Exception) {
-                if (browseRequests.accepts(requestToken, selection().key, revision(source)))
-                    mutableState.value = state.value.copy(catalog = old.copy(error = error.message ?: "加载失败，请重试"))
+            val result = fetchPage(old, page) {
+                client.filteredBrowse(page, requestedSelection.category, requestedSelection.filters)
             }
+            if (!browseRequests.accepts(requestToken, selection().key, revision(source))) return@launch
+            if (result.request == null) rememberWorks(result.works)
+            mutableState.value = state.value.copy(catalog = result)
         }
     }
+
+    fun search(raw: String) {
+        val keyword = raw.trim()
+        if (keyword.isEmpty()) return
+        searchJobs.values.forEach { it.cancel() }
+        mutableState.value = state.value.copy(search = SearchUi(keyword))
+        SourceId.entries.forEach { loadSearchPage(it, 1) }
+    }
+
+    fun loadSearchPage(source: SourceId, page: Int) {
+        val search = state.value.search
+        val old = search.pages[source] ?: CatalogUi()
+        if (search.keyword.isEmpty() || !old.canLoad(page)) return
+        val client = app.source(source)
+        updateSearchPage(source, old.copy(request = CatalogUi.Request(page)))
+        searchJobs[source] = viewModelScope.launch {
+            val result = fetchPage(old, page) { client.search(search.keyword, page) }
+            // The previous query or mirror can be cancelled while the network response is arriving.
+            currentCoroutineContext().ensureActive()
+            if (result.request == null) rememberWorks(result.works)
+            updateSearchPage(source, result)
+        }
+    }
+
+    private fun updateSearchPage(source: SourceId, page: CatalogUi) {
+        val current = state.value
+        mutableState.value = current.copy(search = current.search.copy(pages = current.search.pages + (source to page)))
+    }
+
+    private suspend fun fetchPage(old: CatalogUi, page: Int, fetch: suspend () -> CatalogPage): CatalogUi =
+        try {
+            val result = fetch()
+            check(result.page == page) { "音源返回的页码有误，请重试" }
+            CatalogUi(result.works.distinctBy { it.ref.key }, page, result.hasMore)
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (error: Exception) {
+            old.copy(request = CatalogUi.Request(page, error.message ?: "加载失败，请重试"))
+        }
     private fun rememberWorks(works: List<WorkSummary>) {
         works.forEach { incoming ->
             knownWorks[incoming.ref.key] = FacetDiscovery.merge(knownWorks[incoming.ref.key], incoming)
@@ -311,7 +367,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 browseRequests.invalidate()
                 browseJob?.cancel()
                 mutableState.value = state.value.copy(catalog = CatalogUi())
-                loadMore()
+                loadCatalogPage(1)
+            }
+            if (state.value.search.keyword.isNotEmpty()) {
+                searchJobs[SourceId.ASMR_ONE]?.cancel()
+                updateSearchPage(SourceId.ASMR_ONE, CatalogUi())
+                loadSearchPage(SourceId.ASMR_ONE, 1)
             }
             message("ASMR.one 镜像设置已应用")
         } catch (error: Exception) { message(error.message ?: "无法保存镜像设置") }

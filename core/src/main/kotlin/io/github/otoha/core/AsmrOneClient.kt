@@ -23,10 +23,15 @@ class AsmrOneClient(
 
     override suspend fun filteredBrowse(page: Int, category: String, filters: BrowseFilters): CatalogPage {
         if (filters.isEmpty) return browse(page, category)
+        return search(filterKeyword(filters), page)
+    }
+
+    override suspend fun search(keyword: String, page: Int): CatalogPage {
         require(page > 0) { "页码必须大于 0" }
-        val keyword = filterKeyword(filters)
+        val query = keyword.trim()
+        require(query.isNotEmpty() && query != "." && query != "..") { "请输入有效的搜索关键词" }
         // Encode once as a single path segment. The charset-name overload is available on Android 26.
-        val encoded = URLEncoder.encode(keyword, "UTF-8").replace("+", "%20")
+        val encoded = URLEncoder.encode(query, "UTF-8").replace("+", "%20")
         val path = "/api/search/$encoded?order=release&sort=desc&page=$page&pageSize=30&includeTranslationWorks=true"
         return acrossMirrors(path) { AsmrOneParser.catalog(it, page, 30) }
     }
