@@ -85,7 +85,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val player = PlayerConnection(application, store)
     private val mutableState = MutableStateFlow(MainUi())
     val state = mutableState.asStateFlow()
-    private val catalogs = mutableMapOf<CatalogKey, CatalogUi>()
+    private val catalogs = CatalogPageCache<CatalogKey>(capacity = 12)
+    private val searchPages = CatalogPageCache<SourceId>(capacity = 8)
     private val knownWorks = mutableMapOf<String, WorkSummary>()
     private val facetCache = mutableMapOf<Pair<SourceId, FacetKind>, List<FacetValue>>()
     private var facetJob: Job? = null
@@ -123,11 +124,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         browseJob?.cancel()
         browseRequests.invalidate()
         closeFacetPicker()
-        val old = state.value
-        catalogs[selection().key] = if (old.catalog.loading) old.catalog.copy(request = null) else old.catalog
-        if (resetPage) catalogs.remove(next.key)
+        val key = next.key
+        if (resetPage) catalogs.invalidate { it == key }
         mutableState.value = state.value.copy(source = next.source, category = next.category, filters = next.filters,
-            catalog = catalogs[next.key] ?: CatalogUi(), message = null)
+            catalog = catalogs.latest(key) ?: CatalogUi(), message = null)
         if (state.value.catalog.page == 0) loadCatalogPage(1)
     }
     fun selectFacet(value: FacetValue) {
@@ -145,8 +145,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val old = state.value.catalog
         if (!old.canLoad(page)) return
         val requestedSelection = selection()
+        val key = requestedSelection.key
+        val refresh = page == old.page
+        if (!refresh) catalogs.get(key, page)?.let { cached ->
+            mutableState.value = state.value.copy(catalog = cached)
+            return
+        }
         val source = requestedSelection.source
-        val requestToken = browseRequests.begin(requestedSelection.key, revision(source))
+        val requestToken = browseRequests.begin(key, revision(source))
         val client = app.source(source)
         mutableState.value = state.value.copy(catalog = old.copy(request = CatalogUi.Request(page)))
         browseJob = viewModelScope.launch {
@@ -154,7 +160,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 client.filteredBrowse(page, requestedSelection.category, requestedSelection.filters)
             }
             if (!browseRequests.accepts(requestToken, selection().key, revision(source))) return@launch
-            if (result.request == null) rememberWorks(result.works)
+            if (result.request == null) {
+                if (refresh) catalogs.invalidate { it == key }
+                catalogs.put(key, result)
+                rememberWorks(result.works)
+            }
             mutableState.value = state.value.copy(catalog = result)
         }
     }
@@ -163,6 +173,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val keyword = raw.trim()
         if (keyword.isEmpty()) return
         searchJobs.values.forEach { it.cancel() }
+        searchPages.clear()
         mutableState.value = state.value.copy(search = SearchUi(keyword))
         SourceId.entries.forEach { loadSearchPage(it, 1) }
     }
@@ -171,13 +182,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val search = state.value.search
         val old = search.pages[source] ?: CatalogUi()
         if (search.keyword.isEmpty() || !old.canLoad(page)) return
+        searchPages.get(source, page)?.let { cached ->
+            updateSearchPage(source, cached)
+            return
+        }
         val client = app.source(source)
         updateSearchPage(source, old.copy(request = CatalogUi.Request(page)))
         searchJobs[source] = viewModelScope.launch {
             val result = fetchPage(old, page) { client.search(search.keyword, page) }
             // The previous query or mirror can be cancelled while the network response is arriving.
             currentCoroutineContext().ensureActive()
-            if (result.request == null) rememberWorks(result.works)
+            if (result.request == null) {
+                searchPages.put(source, result)
+                rememberWorks(result.works)
+            }
             updateSearchPage(source, result)
         }
     }
@@ -353,7 +371,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (normalized == store.data.value.asmrOneApiBaseUrl) return
             store.setAsmrOneApiBaseUrl(normalized)
             asmrOneRevision++
-            catalogs.keys.filter { it.source == SourceId.ASMR_ONE }.toList().forEach { catalogs.remove(it) }
+            catalogs.invalidate { it.source == SourceId.ASMR_ONE }
+            searchPages.invalidate { it == SourceId.ASMR_ONE }
             facetCache.keys.filter { it.first == SourceId.ASMR_ONE }.toList().forEach { facetCache.remove(it) }
             if (state.value.facetPicker?.source == SourceId.ASMR_ONE) closeFacetPicker()
             if (detailSource == SourceId.ASMR_ONE) closeDetail()

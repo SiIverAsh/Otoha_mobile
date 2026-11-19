@@ -84,7 +84,7 @@ class AsmrOneParserTest {
         assertEquals("1000099", detail.summary.ref.id)
         assertEquals(listOf(
             "https://down/api/workInfo/RJ01000099", "https://up/api/workInfo/RJ01000099",
-            "https://down/api/tracks/1000099", "https://up/api/tracks/1000099",
+            "https://up/api/tracks/1000099",
         ), requests)
     }
 

@@ -9,6 +9,29 @@ import io.github.otoha.core.WorkSummary
 
 internal data class CatalogKey(val source: SourceId, val category: String, val facets: List<FacetValue>)
 
+internal class CatalogPageCache<Scope>(private val capacity: Int) {
+    private data class Key<Scope>(val scope: Scope, val page: Int)
+    private val pages = LinkedHashMap<Key<Scope>, CatalogUi>(capacity, 0.75f, true)
+
+    fun get(scope: Scope, page: Int): CatalogUi? = pages[Key(scope, page)]
+
+    fun latest(scope: Scope): CatalogUi? {
+        val key = pages.keys.lastOrNull { it.scope == scope } ?: return null
+        return pages[key]
+    }
+
+    fun put(scope: Scope, page: CatalogUi) {
+        pages[Key(scope, page.page)] = page
+        if (pages.size > capacity) pages.remove(pages.keys.first())
+    }
+
+    fun invalidate(matches: (Scope) -> Boolean) {
+        pages.keys.removeAll { matches(it.scope) }
+    }
+
+    fun clear() = pages.clear()
+}
+
 internal class CatalogRequestGate {
     data class Token(val generation: Long, val key: CatalogKey, val sourceRevision: Int)
     private var generation = 0L

@@ -5,6 +5,15 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 val publishedKeystore = providers.environmentVariable("OTOHA_KEYSTORE_PATH").orNull
+val robolectricSdk by configurations.creating {
+    isCanBeConsumed = false
+    isTransitive = false
+}
+val robolectricSdkDir = layout.buildDirectory.dir("robolectric-sdk")
+val prepareRobolectricSdk by tasks.registering(Sync::class) {
+    from(robolectricSdk)
+    into(robolectricSdkDir)
+}
 android {
     namespace = "io.github.otoha.mobile"
     compileSdk = 36
@@ -31,9 +40,8 @@ android {
                 "--add-opens=java.desktop/java.awt.font=ALL-UNNAMED",
                 "--add-opens=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
             )
-            providers.gradleProperty("robolectricRepository").orNull?.let { repository ->
-                it.systemProperty("robolectric.dependency.repo.url", repository)
-            }
+            it.inputs.files(prepareRobolectricSdk).withPathSensitivity(PathSensitivity.RELATIVE)
+            it.systemProperty("robolectric.dependency.dir", robolectricSdkDir.get().asFile.absolutePath)
         }
     }
     compileOptions {
@@ -81,6 +89,8 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.17")
+    // Robolectric 4.17's instrumented Android 16 runtime for @Config(sdk = [36]).
+    robolectricSdk("org.robolectric:android-all-instrumented:16-robolectric-13921718-i7@jar")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
 }

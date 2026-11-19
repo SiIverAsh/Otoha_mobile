@@ -1,16 +1,31 @@
 package io.github.otoha.core
 
 import java.io.IOException
+import java.net.SocketTimeoutException
 import java.net.URLEncoder
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** Direct, on-demand public API access; mirror behavior follows Otoha (GPL-3.0). */
-class AsmrOneClient(
-    http: SourceHttp = SourceHttp(),
-    private val mirrors: List<String> = DEFAULT_MIRRORS,
-    private val request: suspend (String, SourceId) -> String = http::get,
+class AsmrOneClient internal constructor(
+    private val mirrors: List<String>,
+    private val request: suspend (String, SourceId) -> String,
+    private val requestTimeoutMs: Long,
+    private val mirrorTimeoutMs: Long,
 ) : SourceClient {
+    constructor(
+        http: SourceHttp = SourceHttp(),
+        mirrors: List<String> = DEFAULT_MIRRORS,
+        request: suspend (String, SourceId) -> String = http::get,
+    ) : this(mirrors, request, requestTimeoutMs = 20_000, mirrorTimeoutMs = 5_000)
+
     override val source = SourceId.ASMR_ONE
+    private val lastSuccessfulMirror = AtomicReference<String?>()
 
     init { require(mirrors.isNotEmpty()) { "至少需要一个 ASMR.one 镜像" } }
 
@@ -18,7 +33,7 @@ class AsmrOneClient(
         require(page > 0) { "页码必须大于 0" }
         // General-only filtering is also enforced locally by the app: the API parameter is not trusted as an age guarantee.
         val path = "/api/works?order=release&sort=desc&page=$page&pageSize=30"
-        return acrossMirrors(path) { AsmrOneParser.catalog(it, page, 30) }
+        return withinRequestTimeout { acrossMirrors(path) { AsmrOneParser.catalog(it, page, 30) } }
     }
 
     override suspend fun filteredBrowse(page: Int, category: String, filters: BrowseFilters): CatalogPage {
@@ -33,7 +48,7 @@ class AsmrOneClient(
         // Encode once as a single path segment. The charset-name overload is available on Android 26.
         val encoded = URLEncoder.encode(query, "UTF-8").replace("+", "%20")
         val path = "/api/search/$encoded?order=release&sort=desc&page=$page&pageSize=30&includeTranslationWorks=true"
-        return acrossMirrors(path) { AsmrOneParser.catalog(it, page, 30) }
+        return withinRequestTimeout { acrossMirrors(path) { AsmrOneParser.catalog(it, page, 30) } }
     }
 
     override suspend fun facetOptions(kind: FacetKind): List<FacetValue> {
@@ -43,26 +58,49 @@ class AsmrOneClient(
             FacetKind.CIRCLE -> "circles"
         }
         // The trailing slash is required by the public ASMR.one deployment.
-        return acrossMirrors("/api/$endpoint/") { AsmrOneParser.options(kind, it) }
+        return withinRequestTimeout { acrossMirrors("/api/$endpoint/") { AsmrOneParser.options(kind, it) } }
     }
 
     override suspend fun detail(ref: WorkRef): WorkDetail {
         require(ref.source == source) { "作品不属于 ASMR.one" }
         val id = ref.id.trim().let { AsmrOneParser.canonicalWorkNumber(it).ifBlank { it } }
         require(id.toIntOrNull()?.let { it > 0 } == true || AsmrOneParser.canonicalWorkNumber(id).isNotBlank()) { "无效作品编号" }
-        val summary = acrossMirrors("/api/workInfo/$id") { AsmrOneParser.work(it, id) }
-        val numericId = summary.ref.id.toIntOrNull()?.takeIf { it > 0 }
-            ?: summary.workNumber.drop(2).toIntOrNull()?.takeIf { it > 0 }
-            ?: throw SourceException("ASMR.one 作品缺少曲目查询标识")
-        val tracks = acrossMirrors("/api/tracks/$numericId") { AsmrOneParser.tracks(it, summary.ref) }
-        return WorkDetail(summary, tracks)
+        return withinRequestTimeout {
+            val summary = acrossMirrors("/api/workInfo/$id") { AsmrOneParser.work(it, id) }
+            val numericId = summary.ref.id.toIntOrNull()?.takeIf { it > 0 }
+                ?: summary.workNumber.drop(2).toIntOrNull()?.takeIf { it > 0 }
+                ?: throw SourceException("ASMR.one 作品缺少曲目查询标识")
+            val tracks = acrossMirrors("/api/tracks/$numericId") { AsmrOneParser.tracks(it, summary.ref) }
+            WorkDetail(summary, tracks)
+        }
+    }
+
+    private suspend fun <T : Any> withinRequestTimeout(block: suspend () -> T): T {
+        val outcome = withTimeoutOrNull(requestTimeoutMs) {
+            try {
+                Result.success(block())
+            } catch (error: IOException) {
+                // Keep the original network cause across the timeout coroutine boundary.
+                Result.failure(error)
+            }
+        } ?: throw SourceException("ASMR.one 请求超时，请重试")
+        return outcome.getOrThrow()
     }
 
     private suspend fun <T> acrossMirrors(path: String, parse: (String) -> T): T {
+        val preferred = lastSuccessfulMirror.get()
+        val ordered = if (preferred == null) mirrors else listOf(preferred) + mirrors.filterNot { it == preferred }
         var lastError: IOException? = null
-        for (mirror in mirrors) {
+        for (mirror in ordered) {
             try {
-                return parse(request(mirror.trimEnd('/') + path, source))
+                val url = mirror.trimEnd('/') + path
+                val body = if (ordered.size == 1) request(url, source) else
+                    withTimeoutOrNull(mirrorTimeoutMs) { request(url, source) }
+                        ?: throw SocketTimeoutException("ASMR.one 镜像响应超时")
+                val result = withContext(Dispatchers.Default) { parse(body) }
+                currentCoroutineContext().ensureActive()
+                lastSuccessfulMirror.set(mirror)
+                return result
             } catch (e: CancellationException) {
                 throw e
             } catch (e: SourceException) {

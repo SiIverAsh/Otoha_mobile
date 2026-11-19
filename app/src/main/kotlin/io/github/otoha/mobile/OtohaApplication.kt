@@ -11,6 +11,7 @@ class OtohaApplication : Application() {
     val store by lazy { AppStore(this) }
     internal val crashReports by lazy { CrashReports(this) }
     private val http by lazy { SourceHttp() }
+    private val defaultAsmrOne by lazy { AsmrOneClient(http) }
     private val asmr18 by lazy { Asmr18Client(http) }
 
     override fun onCreate() {
@@ -20,9 +21,8 @@ class OtohaApplication : Application() {
 
     /** Each request captures an immutable mirror configuration, while sharing transport/rate limits. */
     fun source(id: SourceId): SourceClient = when (id) {
-        SourceId.ASMR_ONE -> AsmrOneClient(http,
-            mirrors = store.data.value.asmrOneApiBaseUrl.takeIf(String::isNotBlank)?.let { listOf(it) }
-                ?: AsmrOneClient.DEFAULT_MIRRORS)
+        SourceId.ASMR_ONE -> store.data.value.asmrOneApiBaseUrl.takeIf(String::isNotBlank)
+            ?.let { AsmrOneClient(http, mirrors = listOf(it)) } ?: defaultAsmrOne
         SourceId.ASMR18 -> asmr18
     }
 }
