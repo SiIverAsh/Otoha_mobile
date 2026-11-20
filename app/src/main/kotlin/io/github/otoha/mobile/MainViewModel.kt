@@ -326,7 +326,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (state.value.category != "allages") switchCatalog(CatalogSelection(state.value.source, "allages", state.value.filters))
         }
     }
-    fun restore(snapshot: PlaybackSnapshot, continuationToken: String? = null, isContinuation: Boolean = false) {
+    fun restore(snapshot: PlaybackSnapshot) = restore(snapshot, null)
+
+    private fun restore(snapshot: PlaybackSnapshot, retry: ManualPlaybackRetry?) {
         if (!visible(snapshot.work) || state.value.restoring || !player.state.value.connected) return
         mutableState.value = state.value.copy(restoring = true)
         val requestRevision = revision(snapshot.work.ref.source)
@@ -337,19 +339,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val refreshed = client.detail(snapshot.work.ref)
                 if (revision(snapshot.work.ref.source) != requestRevision) return@launch
+                val current = if (retry == null) snapshot else player.currentRetrySnapshot(retry) ?: return@launch
                 if (!visible(refreshed.summary)) error("此作品不在当前分级显示范围内")
-                val tracks = snapshot.tracks.map { old ->
-                    refreshed.tracks.singleOrNull { it.id == old.id && it.directory == old.directory }
-                        ?: error("原队列中的曲目已变化，请打开作品重新选择版本")
-                }
-                if (snapshot.index !in tracks.indices) error("播放记录不完整，请重新选择曲目")
-                if (isContinuation && player.recordingToken() != continuationToken)
-                    error("当前播放已变化，请重新选择曲目")
-                player.play(refreshed.summary, tracks, snapshot.index, snapshot.positionMs, snapshot.speed,
-                    continuationToken, isContinuation)
+                val tracks = refreshedQueue(current.tracks, refreshed)
+                if (current.index !in tracks.indices) error("播放记录不完整，请重新选择曲目")
+                player.play(refreshed.summary, tracks, current.index, current.positionMs, current.speed,
+                    continuationToken = retry?.token, isContinuation = retry != null)
             } catch (cancel: CancellationException) { throw cancel
             } catch (error: Exception) {
-                if (revision(snapshot.work.ref.source) == requestRevision) message(error.message ?: "恢复播放失败，请打开作品重试")
+                if (revision(snapshot.work.ref.source) == requestRevision &&
+                    (retry == null || player.currentRetrySnapshot(retry) != null)) {
+                    message(error.message ?: "恢复播放失败，请打开作品重试")
+                }
             } finally {
                 if (generation == restoreGeneration) {
                     restoreSource = null
@@ -359,11 +360,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
     fun retryPlayback() {
-        val current = player.state.value
-        val work = current.work ?: return
-        if (current.tracks.isEmpty()) return
-        restore(PlaybackSnapshot(work, current.tracks, current.index, current.positionMs, current.speed),
-            continuationToken = player.recordingToken(), isContinuation = true)
+        val retry = player.captureRetry() ?: return
+        restore(retry.snapshot, retry)
     }
     fun setAsmrOneMirror(raw: String) {
         try {

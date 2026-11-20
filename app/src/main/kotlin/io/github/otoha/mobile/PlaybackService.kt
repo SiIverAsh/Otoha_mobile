@@ -4,6 +4,7 @@ package io.github.otoha.mobile
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -21,10 +22,10 @@ import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
-import io.github.otoha.core.AudioTrack
-import io.github.otoha.core.PlaybackSnapshot
+import io.github.otoha.core.ContentRating
 import io.github.otoha.core.SourceId
-import io.github.otoha.core.WorkSummary
+import io.github.otoha.core.WorkDetail
+import io.github.otoha.core.WorkRef
 import io.github.otoha.core.requestHeaders
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
@@ -58,6 +59,8 @@ private class SourceMediaFactory(service: PlaybackService) : MediaSource.Factory
 
 class PlaybackService : MediaSessionService() {
     private var session: MediaSession? = null
+    private lateinit var recovery: PlaybackRecoveryController
+    private lateinit var network: PlaybackNetworkMonitor
     private val handler = Handler(Looper.getMainLooper())
     private val store get() = (application as OtohaApplication).store
     private val checkpoint = object : Runnable {
@@ -95,29 +98,44 @@ class PlaybackService : MediaSessionService() {
                     return if (controller.packageName == packageName || controller.isTrusted)
                         super.onConnect(session, controller) else MediaSession.ConnectionResult.reject()
                 }
+                override fun onPlayerInteractionFinished(session: MediaSession, controllerInfo: MediaSession.ControllerInfo,
+                    playerCommands: Player.Commands) {
+                    // ExoPlayer can retain playWhenReady and the network error after an explicit stop.
+                    if (playerCommands.contains(Player.COMMAND_STOP) && player.playbackState == Player.STATE_IDLE) player.pause()
+                }
             }).build()
+        recovery = PlaybackRecoveryController(player,
+            refreshDetail = ::refreshDetail,
+            isVisible = { work -> store.data.value.showRestricted || work.rating == ContentRating.GENERAL },
+            onStatus = { status -> session?.setSessionExtras(Bundle().apply { putString(MediaExtras.RECOVERY, status.name) }) })
+        player.addListener(object : Player.Listener {
+            override fun onEvents(player: Player, events: Player.Events) = recovery.evaluate()
+        })
+        network = PlaybackNetworkMonitor(this, recovery::onNetworkChanged)
+        network.start()
         handler.postDelayed(checkpoint, 5_000)
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
+    private suspend fun refreshDetail(ref: WorkRef): WorkDetail {
+        val mirror = store.data.value.asmrOneApiBaseUrl
+        val detail = (application as OtohaApplication).source(ref.source).detail(ref)
+        check(ref.source != SourceId.ASMR_ONE || store.data.value.asmrOneApiBaseUrl == mirror) { "音源镜像已切换" }
+        return detail
+    }
+
     private fun saveCheckpoint() {
         val player = session?.player ?: return
-        if (player.mediaItemCount == 0) return
         runCatching {
-            val work = player.currentMediaItem?.mediaMetadata?.extras?.getString(WORK_EXTRA)
-                ?.let { appJson.decodeFromString<WorkSummary>(it) } ?: return
-            val tracks = (0 until player.mediaItemCount).map { index ->
-                val raw = player.getMediaItemAt(index).mediaMetadata.extras?.getString(TRACK_EXTRA) ?: return
-                appJson.decodeFromString<AudioTrack>(raw)
-            }
-            store.savePlayback(PlaybackSnapshot(work, tracks, player.currentMediaItemIndex,
-                player.currentPosition.coerceAtLeast(0), player.playbackParameters.speed),
+            store.savePlayback(player.playbackSnapshot() ?: return,
                 player.currentMediaItem?.mediaMetadata?.extras?.getString(RECORDING_TOKEN_EXTRA))
         }
     }
 
     override fun onDestroy() {
+        network.close()
+        recovery.close()
         handler.removeCallbacks(checkpoint)
         store.sleepAfter(0)
         saveCheckpoint()
@@ -128,6 +146,7 @@ class PlaybackService : MediaSessionService() {
 }
 
 internal object MediaExtras {
+    const val RECOVERY = "otoha.recovery"
     const val WORK = WORK_EXTRA
     const val TRACK = TRACK_EXTRA
     const val SOURCE = SOURCE_EXTRA

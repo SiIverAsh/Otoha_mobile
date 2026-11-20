@@ -4,19 +4,14 @@ package io.github.otoha.mobile
 
 import android.content.ComponentName
 import android.content.Context
-import android.net.Uri
-import android.os.Bundle
 import androidx.core.content.ContextCompat
 import androidx.media3.common.C
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
-import androidx.media3.common.MimeTypes
-import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import io.github.otoha.core.AudioTrack
+import io.github.otoha.core.PlaybackSnapshot
 import io.github.otoha.core.SourceHttp
 import io.github.otoha.core.SubtitleCue
 import io.github.otoha.core.SubtitleParser
@@ -37,15 +32,15 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.serialization.encodeToString
 
 data class PlaybackUi(
     val connected: Boolean = false,
     val work: WorkSummary? = null,
     val tracks: List<AudioTrack> = emptyList(),
     val index: Int = 0,
-    val playing: Boolean = false,
+    val showPause: Boolean = false,
     val buffering: Boolean = false,
+    val recoveryStatus: RecoveryStatus = RecoveryStatus.NONE,
     val positionMs: Long = 0,
     val durationMs: Long = 0,
     val speed: Float = 1f,
@@ -54,6 +49,31 @@ data class PlaybackUi(
     val subtitleError: String? = null,
     val subtitleLoading: Boolean = false,
 ) { val track: AudioTrack? get() = tracks.getOrNull(index) }
+
+internal class ManualPlaybackRetry private constructor(
+    val snapshot: PlaybackSnapshot,
+    val token: String,
+    private val mediaId: String,
+    private val playWhenReady: Boolean,
+    private val revision: Long,
+) {
+    fun currentSnapshot(player: Player, currentRevision: Long): PlaybackSnapshot? {
+        val item = player.currentMediaItem ?: return null
+        if (revision != currentRevision || player.playWhenReady != playWhenReady ||
+            player.currentMediaItemIndex != snapshot.index || item.mediaId != mediaId ||
+            item.mediaMetadata.extras?.getString(MediaExtras.RECORDING_TOKEN) != token) return null
+        return snapshot.copy(positionMs = player.currentPosition.coerceAtLeast(0), speed = player.playbackParameters.speed)
+    }
+
+    companion object {
+        fun capture(player: Player, revision: Long): ManualPlaybackRetry? {
+            val item = player.currentMediaItem ?: return null
+            val token = item.mediaMetadata.extras?.getString(MediaExtras.RECORDING_TOKEN) ?: return null
+            val snapshot = runCatching { player.playbackSnapshot() }.getOrNull() ?: return null
+            return ManualPlaybackRetry(snapshot, token, item.mediaId, player.playWhenReady, revision)
+        }
+    }
+}
 
 class PlayerConnection(context: Context, private val store: AppStore) {
     private val appContext = context.applicationContext
@@ -69,10 +89,12 @@ class PlayerConnection(context: Context, private val store: AppStore) {
     private var future: ListenableFuture<MediaController>? = null
     private var closed = false
     private var connectionGeneration = 0
+    private var retryRevision = 0L
     private val listener = object : Player.Listener {
-        override fun onEvents(player: Player, events: Player.Events) { queueDirty = true; refresh() }
-        override fun onPlayerError(error: PlaybackException) {
-            mutableState.value = mutableState.value.copy(error = "播放失败：${error.errorCodeName}。可重新打开作品刷新链接。")
+        override fun onEvents(player: Player, events: Player.Events) {
+            if (events.containsAny(Player.EVENT_PLAY_WHEN_READY_CHANGED, Player.EVENT_MEDIA_ITEM_TRANSITION)) retryRevision++
+            queueDirty = true
+            refresh()
         }
     }
 
@@ -105,6 +127,7 @@ class PlayerConnection(context: Context, private val store: AppStore) {
 
     private fun connect() {
         if (closed) return
+        retryRevision++
         val generation = ++connectionGeneration
         val pending = MediaController.Builder(appContext,
             SessionToken(appContext, ComponentName(appContext, PlaybackService::class.java)))
@@ -159,9 +182,13 @@ class PlayerConnection(context: Context, private val store: AppStore) {
         val tracks = cachedTracks
         val track = tracks.getOrNull(p.currentMediaItemIndex)
         val matchingSubtitle = subtitleIdentity == Triple(work?.ref, track?.id, track?.subtitle)
+        val recoveryName = p.sessionExtras.getString(MediaExtras.RECOVERY)
+        val recoveryStatus = RecoveryStatus.entries.firstOrNull { it.name == recoveryName } ?: RecoveryStatus.NONE
         mutableState.value = mutableState.value.copy(connected = true, work = work, tracks = tracks,
-            index = p.currentMediaItemIndex.coerceAtLeast(0), playing = p.isPlaying,
+            index = p.currentMediaItemIndex.coerceAtLeast(0),
+            showPause = p.playWhenReady && p.playbackState != Player.STATE_ENDED,
             buffering = p.playbackState == Player.STATE_BUFFERING,
+            recoveryStatus = recoveryStatus,
             positionMs = p.currentPosition.coerceAtLeast(0),
             durationMs = p.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: tracks.getOrNull(p.currentMediaItemIndex)?.durationMs ?: 0,
             speed = p.playbackParameters.speed,
@@ -176,19 +203,7 @@ class PlayerConnection(context: Context, private val store: AppStore) {
         val p = player ?: return
         if (tracks.isEmpty() || index !in tracks.indices) return
         val recordingToken = if (isContinuation) store.continuePlayback(continuationToken) ?: return else store.beginPlayback()
-        val items = tracks.map { track ->
-            val extras = Bundle().apply {
-                putString(MediaExtras.WORK, appJson.encodeToString(work))
-                putString(MediaExtras.TRACK, appJson.encodeToString(track))
-                putString(MediaExtras.SOURCE, work.ref.source.name)
-                putString(MediaExtras.RECORDING_TOKEN, recordingToken)
-            }
-            MediaItem.Builder().setMediaId("${work.ref.key}:${track.id}").setUri(track.url)
-                .apply { if (track.isHls) setMimeType(MimeTypes.APPLICATION_M3U8) }
-                .setMediaMetadata(MediaMetadata.Builder().setTitle(track.title).setAlbumTitle(work.title)
-                    .setArtist(work.circle).setArtworkUri(work.coverUrl.takeIf(String::isNotBlank)?.let(Uri::parse))
-                    .setExtras(extras).build()).build()
-        }
+        val items = playbackMediaItems(work, tracks, recordingToken)
         p.setMediaItems(items, index, positionMs.coerceAtLeast(0))
         p.setPlaybackSpeed(speed.coerceIn(.5f, 2f))
         p.prepare()
@@ -215,7 +230,9 @@ class PlayerConnection(context: Context, private val store: AppStore) {
     fun speed(value: Float) { player?.setPlaybackSpeed(value) }
     fun pause() { player?.pause() }
     fun clear() { player?.run { stop(); clearMediaItems() } }
-    fun recordingToken(): String? = player?.currentMediaItem?.mediaMetadata?.extras?.getString(MediaExtras.RECORDING_TOKEN)
+    internal fun captureRetry(): ManualPlaybackRetry? = player?.let { ManualPlaybackRetry.capture(it, retryRevision) }
+    internal fun currentRetrySnapshot(retry: ManualPlaybackRetry): PlaybackSnapshot? =
+        player?.let { retry.currentSnapshot(it, retryRevision) }
     fun close() {
         if (closed) return
         closed = true

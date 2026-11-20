@@ -653,10 +653,10 @@ private fun MiniPlayer(state: PlaybackUi, onOpen: () -> Unit, onToggle: () -> Un
                 Column(Modifier.weight(1f)) {
                     Text(state.track?.title.orEmpty(), style = MaterialTheme.typography.titleSmall,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(if (state.buffering) "正在缓冲…" else state.work?.circle.orEmpty(),
+                    Text(state.recoveryStatus.message ?: if (state.buffering) "正在缓冲…" else state.work?.circle.orEmpty(),
                         style = MaterialTheme.typography.labelSmall, maxLines = 1)
                 }
-                TextButton(onClick = onToggle) { Text(if (state.playing || state.buffering) "暂停" else "播放") }
+                TextButton(onClick = onToggle) { Text(if (state.showPause) "暂停" else "播放") }
             }
             LinearProgressIndicator(progress = { if (state.durationMs > 0) (state.positionMs.toFloat() / state.durationMs).coerceIn(0f, 1f) else 0f },
                 modifier = Modifier.fillMaxWidth().height(2.dp))
@@ -683,8 +683,14 @@ private fun PlayerScreen(state: PlaybackUi, player: PlayerConnection, incognito:
                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         if (state.buffering) LinearProgressIndicator(Modifier.fillMaxWidth())
-        if (state.error != null) {
-            Text(state.error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        val manualRetry = state.recoveryStatus == RecoveryStatus.EXHAUSTED ||
+            (state.recoveryStatus == RecoveryStatus.NONE && state.error != null)
+        val statusText = state.recoveryStatus.message ?: state.error
+        if (statusText != null) {
+            Text(statusText, color = if (manualRetry) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary,
+                style = MaterialTheme.typography.bodySmall)
+        }
+        if (manualRetry) {
             OutlinedButton(onClick = onRetry, enabled = state.connected && !retrying) {
                 Text(if (retrying) "正在刷新播放地址…" else "刷新地址并重试")
             }
@@ -713,8 +719,8 @@ private fun PlayerScreen(state: PlaybackUi, player: PlayerConnection, incognito:
                 Icon(painterResource(R.drawable.ic_player_previous), contentDescription = "上一曲")
             }
             FilledIconButton(onClick = player::toggle, modifier = Modifier.size(64.dp)) {
-                Icon(painterResource(if (state.playing || state.buffering) R.drawable.ic_player_pause else R.drawable.ic_player_play),
-                    contentDescription = if (state.playing || state.buffering) "暂停" else "播放", modifier = Modifier.size(30.dp))
+                Icon(painterResource(if (state.showPause) R.drawable.ic_player_pause else R.drawable.ic_player_play),
+                    contentDescription = if (state.showPause) "暂停" else "播放", modifier = Modifier.size(30.dp))
             }
             IconButton(onClick = player::next, enabled = state.index < state.tracks.lastIndex) {
                 Icon(painterResource(R.drawable.ic_player_next), contentDescription = "下一曲")
