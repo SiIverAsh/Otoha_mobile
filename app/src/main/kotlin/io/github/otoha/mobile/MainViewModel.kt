@@ -95,7 +95,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var browseJob: Job? = null
     private val searchJobs = mutableMapOf<SourceId, Job>()
     private var detailJob: Job? = null
-    private var detailSource: SourceId? = null
+    private var detailRef: WorkRef? = null
     private var restoreJob: Job? = null
     private var restoreSource: SourceId? = null
     private var asmrOneRevision = 0
@@ -270,8 +270,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         open(work.ref)
     }
     private fun open(ref: WorkRef) {
+        if (detailRef?.key == ref.key && (state.value.detailLoading || state.value.detail != null)) return
         detailJob?.cancel()
-        detailSource = ref.source
+        detailRef = ref
         val requestRevision = revision(ref.source)
         val client = app.source(ref.source)
         mutableState.value = state.value.copy(detail = null, detailLoading = true)
@@ -306,7 +307,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun closeDetail() {
         detailJob?.cancel()
-        detailSource = null
+        detailRef = null
         mutableState.value = state.value.copy(detail = null, detailLoading = false)
     }
     fun play(detail: WorkDetail, track: AudioTrack) {
@@ -373,7 +374,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             searchPages.invalidate { it == SourceId.ASMR_ONE }
             facetCache.keys.filter { it.first == SourceId.ASMR_ONE }.toList().forEach { facetCache.remove(it) }
             if (state.value.facetPicker?.source == SourceId.ASMR_ONE) closeFacetPicker()
-            if (detailSource == SourceId.ASMR_ONE) closeDetail()
+            if (detailRef?.source == SourceId.ASMR_ONE) closeDetail()
             if (restoreSource == SourceId.ASMR_ONE) {
                 restoreGeneration++
                 restoreJob?.cancel()

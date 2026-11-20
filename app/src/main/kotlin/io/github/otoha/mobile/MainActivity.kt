@@ -190,7 +190,8 @@ private fun OtohaApp(vm: MainViewModel = viewModel()) {
         },
         bottomBar = {
             Column {
-                if (active != null) MiniPlayer(playback, onOpen = { playerOpen = true }, onToggle = vm.player::toggle)
+                if (active != null) MiniPlayer(playback, onOpenDetail = { vm.open(active) },
+                    onOpenPlayer = { playerOpen = true }, onToggle = vm.player::toggle)
                 NavigationBar(containerColor = MaterialTheme.colorScheme.background) {
                     listOf("发现" to "◉", "收藏" to "♡", "最近" to "◷", "设置" to "☷").forEachIndexed { index, item ->
                         NavigationBarItem(selected = tab == index && !inDetail && !searchOpen,
@@ -646,8 +647,9 @@ private fun SettingSwitch(title: String, description: String, checked: Boolean, 
 }
 
 @Composable
-private fun MiniPlayer(state: PlaybackUi, onOpen: () -> Unit, onToggle: () -> Unit) {
-    Surface(color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen)) {
+private fun MiniPlayer(state: PlaybackUi, onOpenDetail: () -> Unit, onOpenPlayer: () -> Unit, onToggle: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.primaryContainer,
+        modifier = Modifier.fillMaxWidth().clickable(onClickLabel = "查看作品详情", onClick = onOpenDetail)) {
         Column {
             Row(Modifier.padding(horizontal = 20.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -657,6 +659,10 @@ private fun MiniPlayer(state: PlaybackUi, onOpen: () -> Unit, onToggle: () -> Un
                         style = MaterialTheme.typography.labelSmall, maxLines = 1)
                 }
                 TextButton(onClick = onToggle) { Text(if (state.showPause) "暂停" else "播放") }
+                IconButton(onClick = onOpenPlayer) {
+                    Icon(painterResource(R.drawable.ic_player_expand), contentDescription = "打开播放器",
+                        modifier = Modifier.rotate(180f))
+                }
             }
             LinearProgressIndicator(progress = { if (state.durationMs > 0) (state.positionMs.toFloat() / state.durationMs).coerceIn(0f, 1f) else 0f },
                 modifier = Modifier.fillMaxWidth().height(2.dp))
