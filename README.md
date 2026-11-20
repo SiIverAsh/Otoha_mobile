@@ -1,68 +1,52 @@
-# Otoha Mobile
+# Otoha Mobile 🎧
 
-直接连接 ASMR.one 和 [ASMR18](https://asmr18.fans) 的原生 Android 前端，无需电脑、NAS 或 Go 服务。Kotlin、Jetpack Compose、Media3；Android 8.0（API 26）及以上。
+在 Android 上搜索、收藏和播放来自 ASMR.one 与 ASMR18 的音声作品。
 
-最新版本及安装包见 [GitHub Releases](https://github.com/SiIverAsh/Otoha_mobile/releases)。在 GitHub Actions 手动选择补丁（patch）、小版本（minor）或大版本（major），即可自动递增版本、构建、签名并发布，无需填写 tag。开发阶段采用预发布版本；新版本覆盖安装沿用已有签名，保留手机个人数据。
+支持 **Android 8.0 及以上**。在发布页的 **Assets** 中下载 `Otoha-Mobile-vX.Y.Z.apk` 即可安装。[下载 APK](https://github.com/SiIverAsh/Otoha_mobile/releases)
 
-## 使用
+## 🎵 功能描述
 
-- **发现**：切换音源，用上一页和下一页浏览作品。支持按标签、声优或社团筛选，点击作品详情里的同类信息也能进入筛选结果。
-- **全局搜索**：从顶栏输入关键词，同时搜索 ASMR.one 和 ASMR18，按音源切换结果并独立翻页。
-- **翻页缓存**：发现和搜索在内存中保留最近访问的页面，返回仍在缓存中的上一页时直接显示。手动刷新会更新当前目录并清除该目录的旧页面。
-- **筛选**：ASMR.one 每类单选、三类可以组合，结果包含关联翻译版本；ASMR18 每次一个站点分类，选新条件会替换旧条件。筛选窗口只检索选项名称。
-- **音源连接**：ASMR.one 的默认镜像优先使用本次运行中最近成功的镜像。包含镜像回退的单次操作最多等待 20 秒，作品详情和曲目共用这段时间。
-- **分级**：默认仅显示明确标注全年龄的作品，未知分级也隐藏。需要时在“设置 → 显示受限和未分级作品”主动调整。列表会显示已加载与隐藏数量；此设置也作用于收藏、最近、详情和续播。
-- **播放**：作品目录、文件版本各自独立队列，支持 HLS、拖动与后台媒体会话。点底部播放栏的曲名进入当前作品详情，点右侧上箭头展开播放器。在播放器里可以调节倍速、设置 15/30/60 分钟睡眠定时，或点开章节和播放队列。
-- **弱网续播**　连续缓冲 15 秒会自动刷新播放地址。断网时等待联网，恢复后按当前曲目、进度和倍速继续播放。等待期间可暂停或切歌，连续三次恢复失败后可在播放页手动重试。
-- **字幕**：音轨与同目录字幕文件自动配对。展开播放器后，可在标题和进度条之间查看当前字幕。播放或拖动进度时字幕随之更新，重叠字幕分行显示。加载、失败和空时间轴均有提示。
-- **外观**：设置中选择跟随系统、浅色或深色，立即生效并保留选择，系统栏和异常诊断页同步适配。
-- **个人数据**：本机收藏、最近作品、最后一次队列/位置/倍速。恢复前刷新音源地址，并按稳定曲目标识与目录匹配，无法匹配时要求重新选择。
-- **无痕**：不新增历史与进度，退出后当前私密队列仍不记录，重新选曲才开始普通会话。封面缓存单独管理，无痕不隐藏向音源/CDN 的网络请求。
+| 功能 | 用法 |
+| --- | --- |
+| 搜索与发现 | 「全局搜索」用同一个关键词查询两个音源，结果按音源独立翻页。在「发现」可以按标签、声优或社团筛选，也可以直接粘贴 ASMR18 作品链接。 |
+| 版本与队列 | 一部作品按目录提供多个版本时，选中的版本会独立排队，顺播时不会串到其他版本。点底部播放栏的曲名回到作品详情，点右侧上箭头展开播放器。 |
+| 字幕与章节 | ASMR.one 音轨会自动匹配同目录下的同名字幕，拖动进度后就能看到对应台词。带章节的 ASMR18 音轨可以在「章节」里直接跳转。 |
+| 后台与睡眠播放 | 支持 HLS 流式播放，切到其他应用也能继续听。播放器提供 0.75× 至 2× 倍速，睡眠定时可选 15、30 或 60 分钟。 |
+| 收藏与续听 | 在作品详情点「收藏」，以后可以从「收藏」页找到它。「最近 → 接着听」会恢复上次的队列、位置和倍速。播放中途断网时，播放器会等待重新联网后尝试续播。 |
 
-没有离线音频下载、本地目录扫描或账号同步。应用私有 JSON 存储个人数据，关闭系统云备份与设备迁移。封面缓存可在设置中清理。
+默认只显示明确标为全年龄的作品。「设置 → 显示受限和未分级作品」同时控制发现、搜索、收藏和续播入口。设置中也可以切换浅色、深色或跟随系统的主题。
 
-## 构建与测试
+打开「无痕聆听」会停止记录收听历史和进度，退出后重新选曲才恢复记录。播放仍需联网，音源和 CDN 仍会收到请求。封面缓存可以在设置中单独清理。
 
-需要 JDK 21、Android SDK Platform 36、Build Tools 35.0.0。使用 Android Studio 指定 SDK，或设置 ANDROID_HOME；local.properties 不提交。
+## 🛠️ 如何开发
+
+### 在本地运行
+
+1. 克隆仓库，用 Android Studio 打开项目根目录。
+2. 将 Gradle JDK 设为 **JDK 21**，在 SDK Manager 安装 **Android SDK Platform 36** 和 **Build Tools 35.0.0**。
+3. 等待 Gradle 同步完成，选择 `app` 和一台 Android 8.0 及以上的设备或模拟器，点击 **Run**。
+
+也可以从项目根目录使用 Gradle Wrapper 构建。命令行通过 `ANDROID_HOME` 或 `local.properties` 中的 `sdk.dir` 定位 Android SDK，首次构建需要联网下载依赖。
 
 ```sh
-./gradlew :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest
+./gradlew :app:assembleDebug
+```
+
+生成的安装包位于 `app/build/outputs/apk/debug/app-debug.apk`。
+
+### 从哪里改起
+
+- **音源与字幕**　两个站点的请求、作品解析和字幕格式处理都在纯 Kotlin 的 `core` 模块，对应的 JVM 测试也在这里。[core 源码](core/src/main/) · [core 测试](core/src/test/)
+- **界面与播放**　Compose 页面、Media3 后台播放服务、弱网恢复和本地收听记录在 `app` 模块。[app 源码](app/src/main/) · [app 单元测试](app/src/test/)
+
+### 运行测试
+
+```sh
+./gradlew :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebugAndroidTest
 python3 scripts/check-icu-regex.py
+python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
 
-ICU 检查需要系统 ICU（macOS 自带，Linux 可安装 libicu-dev）。首次构建需下载 Gradle、Maven 与 Robolectric SDK 依赖，离线前需要预热缓存。JVM/Robolectric 测试与音源联网验证分开；CI 不请求真实音源。
+单元测试使用离线样例。正则兼容性检查使用系统 ICU，macOS 自带，Debian 或 Ubuntu 需安装 `libicu-dev`。要在设备上运行 Android 测试，启动模拟器或连接已授权的测试机，再执行 `./gradlew :app:connectedDebugAndroidTest`。[CI 工作流](.github/workflows/android.yml) · [音源验证记录](docs/source-validation.md) · [签名与发布说明](docs/releasing.md)
 
-当前本地 **83 项 JVM/Robolectric 测试通过，18 条源码正则通过 ICU 检查，Debug/Release 构建与 Lint 通过**。JVM 测试不能代替 Android/ART；发布工作流在 Android 16 模拟器运行解析回归测试后才发布。工作流实际结果以 [Actions](https://github.com/SiIverAsh/Otoha_mobile/actions) 为准。
-
-```sh
-# 仅在已连接并授权的测试设备上运行
-./gradlew :app:connectedDebugAndroidTest
-# 主动请求公开接口及少量媒体字节，不加入离线测试/CI
-./gradlew :core:run --args='one 243448'
-./gradlew :core:run --args=eighteen
-./gradlew :core:run --args=filters
-./gradlew :core:run --args=subtitles
-```
-
-Debug APK：app/build/outputs/apk/debug/app-debug.apk。签名 Release 构建通过 OTOHA_KEYSTORE_PATH、OTOHA_KEYSTORE_PASSWORD、OTOHA_KEY_ALIAS、OTOHA_KEY_PASSWORD 注入；密钥不进入源码、日志或发布附件。Actions 配置见 [发布说明](docs/releasing.md)。
-
-固定基线：AGP 8.13.2、Gradle 8.13、Kotlin 2.2.10、Compose BOM 2025.08.01、Media3 1.8.0，compile/target SDK 36。版本固定用于可复现构建，不表示各组件均为最新版。官方参考：[AGP 兼容表](https://developer.android.com/build/releases/agp-8-13-0-release-notes)、[Compose 编译插件](https://developer.android.com/jetpack/androidx/releases/compose-kotlin)、[MediaSessionService](https://developer.android.com/media/media3/session/background-playback)。
-
-## 验证与排错
-
-双源公开请求、远端筛选及真实 VTT 配对已取得代表样本证据，见 [0.2.0 功能验证](docs/features-v0.2.0.md)、[音源记录](docs/source-validation.md) 与 [开发状态](docs/development-status.md)。用户已确认 0.1.2 在 Xiaomi 15 Pro / Android 16 启动恢复；0.2.0 的主题、筛选和播放仍需要用户设备反馈，熄屏、蓝牙、来电、连续播放、字幕声画同步和升级数据保留的完整设备验收尚未完成。
-
-遇到未捕获 Java 异常，再次打开会先显示本地报告，可复制或“清除并重试”；设置页也可复制诊断信息。报告在 noBackupFilesDir/last-crash-report.txt，最多 64KiB，不自动上传。没有报告不能排除原生崩溃或系统终止进程。
-
-曾修复字幕 ASS 正则在 Android ICU 上初始化失败的启动问题，见 [根因及回归记录](docs/startup-crash-2026-11-15.md)。
-
-## 结构与许可
-
-- core/：统一身份模型、音源适配、HTML/JSON 静态解析、字幕、JVM 测试与独立联网 probe。
-- app/：Compose 界面、个人数据、Media3 服务、控制器和 Android 回归测试。
-- docs/：功能、音源、排错及发布记录。
-- android-development-handoff.md：早期产品范围与阶段验收依据。
-
-源站播放器只进行特定格式静态解包，不执行远端 JavaScript。CDN URL 不作为收藏与曲目的永久身份；各目录/版本独立排队，ASMR18 章节为文件内 seek。
-
-GPL-3.0-or-later。部分规则及测试样例移植自 [SiIverAsh/Otoha](https://github.com/SiIverAsh/Otoha)，参见 [LICENSE](LICENSE)、[完整条款](COPYING) 和 [来源说明](THIRD_PARTY_NOTICES.md)。
+项目采用 **GPL-3.0-or-later**。部分音源和字幕解析规则及测试样例移植自 Otoha。[Otoha 原项目](https://github.com/SiIverAsh/Otoha) · [许可证](LICENSE) · [完整条款](COPYING) · [第三方来源说明](THIRD_PARTY_NOTICES.md)
