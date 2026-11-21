@@ -15,7 +15,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -57,13 +57,20 @@ internal fun FacetPickerScreen(picker: FacetPickerUi, selected: BrowseFilters,
         if (picker.error != null) {
             Text("站点选项暂不可用：${picker.error}。已发现的选项仍可选择。",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-            TextButton(onClick = onReload) { Text("重试加载站点选项") }
+            OtohaTextButton(onClick = onReload, label = "重试加载站点选项")
         }
         HorizontalDivider()
         LazyColumn(Modifier.fillMaxWidth().heightIn(max = 440.dp), contentPadding = PaddingValues(bottom = 28.dp)) {
             items(matches, key = { it.key }) { value ->
-                Row(Modifier.fillMaxWidth().clickable { onSelect(value) }.padding(vertical = 14.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                val press = rememberButtonPress()
+                Row(
+                    Modifier.fillMaxWidth().then(press.modifier).clickable(
+                        interactionSource = press.interactionSource,
+                        indication = ripple(),
+                        onClick = { onSelect(value) },
+                    ).padding(vertical = 14.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
                     Text(value.name, Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.bodyLarge)
                     if (selected.values.any { it.key == value.key }) Text("已选", color = MaterialTheme.colorScheme.primary)

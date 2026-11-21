@@ -14,9 +14,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -46,12 +44,12 @@ internal fun CrashRecoveryScreen(report: String, onClearAndRetry: () -> Boolean)
             Text("应用上次运行时发生未捕获异常。你可以先复制报告，再清除记录并重新尝试打开。报告只保存在本机，不会自动上传。",
                 style = MaterialTheme.typography.bodyMedium)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(onClick = {
+                OtohaButton(onClick = {
                     message = if (copyDiagnostics(context, report)) "完整报告已复制到系统剪贴板" else "复制失败，请重试"
-                }, modifier = Modifier.weight(1f)) { Text("复制完整报告") }
-                OutlinedButton(onClick = {
+                }, label = "复制完整报告", modifier = Modifier.weight(1f))
+                OtohaOutlinedButton(onClick = {
                     if (!onClearAndRetry()) message = "无法清除异常记录，请稍后重试"
-                }, modifier = Modifier.weight(1f)) { Text("清除并重试") }
+                }, label = "清除并重试", modifier = Modifier.weight(1f))
             }
             message?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
             SelectionContainer(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
