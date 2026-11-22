@@ -16,11 +16,14 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+
+private const val SOURCE_USER_AGENT = "Mozilla/5.0 (compatible; OtohaMobile/0.1)"
 
 class SourceException(
     message: String,
@@ -31,7 +34,7 @@ class SourceException(
 
 fun SourceId.requestHeaders(): Map<String, String> {
     val origin = if (this == SourceId.ASMR_ONE) "https://asmr.one" else "https://asmr18.fans"
-    return mapOf("User-Agent" to "Mozilla/5.0 (compatible; OtohaMobile/0.1)", "Referer" to "$origin/", "Origin" to origin)
+    return mapOf("User-Agent" to SOURCE_USER_AGENT, "Referer" to "$origin/", "Origin" to origin)
 }
 
 class SourceHttp(private val client: OkHttpClient = OkHttpClient.Builder()
@@ -41,12 +44,22 @@ class SourceHttp(private val client: OkHttpClient = OkHttpClient.Builder()
         val mutex = Mutex()
         var lastStartMs: Long? = null
     }
-    private data class Payload(val bytes: ByteArray, val charset: Charset)
+    private data class Payload(val bytes: ByteArray, val charset: Charset) {
+        fun decodeText(): String = bytes.toString(charset).removePrefix("\uFEFF")
+    }
     private val gates = SourceId.entries.associateWith { Gate() }
+    private val dlsiteGate = Gate()
 
-    suspend fun get(url: String, source: SourceId): String {
-        val payload = fetch(url, source)
-        return payload.bytes.toString(payload.charset).removePrefix("\uFEFF")
+    suspend fun get(url: String, source: SourceId): String = fetch(url, source).decodeText()
+
+    /** Reads the original Japanese description so track labels match the published list. */
+    internal suspend fun getDlsiteTrackPage(workNumber: String): String {
+        val url = dlsiteWorkBase.newBuilder().addPathSegment("$workNumber.html").build()
+        val request = Request.Builder().url(url)
+            .header("User-Agent", SOURCE_USER_AGENT)
+            .header("Cookie", "locale=ja-jp")
+            .build()
+        return fetch(request, dlsiteGate).decodeText()
     }
 
     /** Subtitle encoding fallback is intentionally separate from JSON/HTML decoding. */
@@ -56,8 +69,11 @@ class SourceHttp(private val client: OkHttpClient = OkHttpClient.Builder()
         val request = Request.Builder().url(url).apply {
             source.requestHeaders().forEach { (key, value) -> header(key, value) }
         }.build()
+        return fetch(request, gates.getValue(source))
+    }
+
+    private suspend fun fetch(request: Request, gate: Gate): Payload {
         val call = client.newCall(request)
-        val gate = gates.getValue(source)
         gate.mutex.withLock {
             val now = System.nanoTime() / 1_000_000
             val wait = gate.lastStartMs?.let { 500L - (now - it) } ?: 0L
@@ -121,6 +137,7 @@ class SourceHttp(private val client: OkHttpClient = OkHttpClient.Builder()
 
     companion object {
         internal const val MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+        private val dlsiteWorkBase = "https://www.dlsite.com/maniax/work/=/product_id/".toHttpUrl()
 
         // Adapted from Otoha internal/subtitle/parse.go (GPL-3.0). Legacy encodings are
         // necessarily heuristic; BOM and valid UTF-8 always take precedence.

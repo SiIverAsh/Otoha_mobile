@@ -7,6 +7,7 @@ Otoha Mobile 延续 [SiIverAsh/Otoha](https://github.com/SiIverAsh/Otoha) 的 GP
 | 安卓文件 | 原项目参考文件 |
 | --- | --- |
 | AsmrOneClient / AsmrOneParser | internal/asmrone/client.go、dto.go、client_test.go |
+| AsmrOneTrackTitles / DlsiteTrackListParser | internal/scrape/asmrone_track_titles.go、internal/db/asmrone_tracks.go、internal/dlsite/tracklist.go |
 | Asmr18Client / Asmr18Parser 与 work.html 测试样例 | internal/asmr18/client.go、client_test.go、testdata/work.html |
 | SubtitleParser | internal/subtitle/parse.go、parse_test.go |
 

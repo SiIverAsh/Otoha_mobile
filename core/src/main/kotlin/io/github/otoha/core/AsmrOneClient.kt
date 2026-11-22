@@ -17,12 +17,16 @@ class AsmrOneClient internal constructor(
     private val request: suspend (String, SourceId) -> String,
     private val requestTimeoutMs: Long,
     private val mirrorTimeoutMs: Long,
+    private val requestTrackPage: suspend (String) -> String = SourceHttp()::getDlsiteTrackPage,
 ) : SourceClient {
     constructor(
         http: SourceHttp = SourceHttp(),
         mirrors: List<String> = DEFAULT_MIRRORS,
         request: suspend (String, SourceId) -> String = http::get,
-    ) : this(mirrors, request, requestTimeoutMs = 20_000, mirrorTimeoutMs = 5_000)
+    ) : this(
+        mirrors, request, requestTimeoutMs = 20_000, mirrorTimeoutMs = 5_000,
+        requestTrackPage = http::getDlsiteTrackPage,
+    )
 
     override val source = SourceId.ASMR_ONE
     private val lastSuccessfulMirror = AtomicReference<String?>()
@@ -65,7 +69,7 @@ class AsmrOneClient internal constructor(
         require(ref.source == source) { "作品不属于 ASMR.one" }
         val id = ref.id.trim().let { AsmrOneParser.canonicalWorkNumber(it).ifBlank { it } }
         require(id.toIntOrNull()?.let { it > 0 } == true || AsmrOneParser.canonicalWorkNumber(id).isNotBlank()) { "无效作品编号" }
-        return withinRequestTimeout {
+        val detail = withinRequestTimeout {
             val summary = acrossMirrors("/api/workInfo/$id") { AsmrOneParser.work(it, id) }
             val numericId = summary.ref.id.toIntOrNull()?.takeIf { it > 0 }
                 ?: summary.workNumber.drop(2).toIntOrNull()?.takeIf { it > 0 }
@@ -73,6 +77,7 @@ class AsmrOneClient internal constructor(
             val tracks = acrossMirrors("/api/tracks/$numericId") { AsmrOneParser.tracks(it, summary.ref) }
             WorkDetail(summary, tracks)
         }
+        return fillAsmrOneTrackTitles(detail, requestTrackPage)
     }
 
     private suspend fun <T : Any> withinRequestTimeout(block: suspend () -> T): T {

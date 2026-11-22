@@ -3,6 +3,7 @@ package io.github.otoha.core
 import java.io.IOException
 import java.nio.charset.Charset
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -15,6 +16,7 @@ import kotlinx.coroutines.withTimeout
 import okhttp3.Call
 import okhttp3.EventListener
 import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.SocketPolicy
@@ -40,6 +42,28 @@ class SourceHttpTest {
             assertEquals(expected["Origin"], request.getHeader("Origin"))
             assertEquals(expected["User-Agent"], request.getHeader("User-Agent"))
         }
+    }
+
+    @Test fun dlsiteTrackPageUsesTheJapaneseProductPageAndDecodesItsCharset() = runBlocking {
+        val capturedRequest = AtomicReference<Request>()
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            capturedRequest.set(request)
+            chain.proceed(request.newBuilder().url(server.url(request.url.encodedPath)).build())
+        }.build()
+        val title = "<title>ご案内</title>"
+        server.enqueue(MockResponse().setHeader("Content-Type", "text/html; charset=Shift_JIS")
+            .setBody(Buffer().write(title.toByteArray(Charset.forName("Shift_JIS")))))
+
+        assertEquals(title, SourceHttp(client).getDlsiteTrackPage("RJ362053"))
+
+        val original = requireNotNull(capturedRequest.get())
+        val request = requireNotNull(server.takeRequest(2, TimeUnit.SECONDS))
+        assertEquals("https://www.dlsite.com/maniax/work/=/product_id/RJ362053.html", original.url.toString())
+        assertEquals("locale=ja-jp", request.getHeader("Cookie"))
+        assertEquals(SourceId.ASMR_ONE.requestHeaders()["User-Agent"], request.getHeader("User-Agent"))
+        assertNull(request.getHeader("Origin"))
+        assertNull(request.getHeader("Referer"))
     }
 
     @Test fun httpErrorPreservesStatusAndRetryGuidance() = runBlocking {
