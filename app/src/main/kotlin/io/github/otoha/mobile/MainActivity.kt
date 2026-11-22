@@ -103,9 +103,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.hideFromAccessibility
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -136,6 +138,7 @@ private const val PAGE_INITIAL_ALPHA = 0.65f
 private const val PLAYER_SHEET_HEIGHT_FRACTION = 0.9f
 private const val WORK_GRID_COLUMNS = 2
 private const val WORK_COVER_ASPECT_RATIO = 4f / 3f
+private val HeaderCoverWidth = 112.dp
 private val PanelSizeSpec = tween<IntSize>(PANEL_DURATION_MS, easing = FastOutSlowInEasing)
 private val PanelFloatSpec = tween<Float>(PANEL_DURATION_MS, easing = FastOutSlowInEasing)
 private val PageEntranceSpec = tween<Float>(PAGE_DURATION_MS, easing = FastOutSlowInEasing)
@@ -318,7 +321,7 @@ private fun OtohaApp(vm: MainViewModel = viewModel()) {
             modifier = Modifier.fillMaxHeight(PLAYER_SHEET_HEIGHT_FRACTION),
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {
-            PlayerScreen(playback, vm.player, incognito, sleepDeadline, vm.store::sleepAfter,
+            PlayerScreen(playback, active, vm.player, incognito, sleepDeadline, vm.store::sleepAfter,
                 state.restoring, vm::retryPlayback, Modifier.padding(horizontal = 24.dp))
         }
     }
@@ -629,14 +632,55 @@ private fun WorkCard(work: WorkSummary, onClick: () -> Unit) {
 }
 
 @Composable
-private fun Cover(work: WorkSummary, modifier: Modifier = Modifier) {
-    Box(modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.primaryContainer),
-        contentAlignment = Alignment.Center) {
-        Text("♪", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-        if (work.coverUrl.isNotBlank()) AsyncImage(model = ImageRequest.Builder(LocalContext.current)
-            .data(work.coverUrl).apply { work.ref.source.requestHeaders().forEach { (key, value) -> addHeader(key, value) } }
-            .build(), contentDescription = null,
-            modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+private fun Cover(work: WorkSummary, modifier: Modifier = Modifier, contentScale: ContentScale = ContentScale.Crop) {
+    Box(
+        modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.primaryContainer),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            "♪",
+            modifier = Modifier.clearAndSetSemantics {},
+            style = MaterialTheme.typography.headlineLarge,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        if (work.coverUrl.isNotBlank()) {
+            val context = LocalContext.current
+            val request = remember(context, work.ref.source, work.coverUrl) {
+                ImageRequest.Builder(context)
+                    .data(work.coverUrl)
+                    .apply { work.ref.source.requestHeaders().forEach { (name, value) -> addHeader(name, value) } }
+                    .build()
+            }
+            AsyncImage(
+                model = request,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = contentScale,
+            )
+        }
+    }
+}
+
+/** Pairs the work's cover with the title and metadata in detail headers. */
+@Composable
+internal fun WorkCoverHeader(work: WorkSummary, content: @Composable ColumnScope.() -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Cover(
+            work = work,
+            modifier = Modifier.width(HeaderCoverWidth).aspectRatio(WORK_COVER_ASPECT_RATIO).semantics {
+                role = Role.Image
+                contentDescription = if (work.coverUrl.isBlank()) "暂无作品封面" else "作品封面"
+            },
+            contentScale = ContentScale.Fit,
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            content = content,
+        )
     }
 }
 
@@ -645,20 +689,17 @@ private fun DetailScreen(detail: WorkDetail, favorite: Boolean, connected: Boole
     onFavorite: () -> Unit, onFacet: (FacetValue) -> Unit, onPlay: (AudioTrack) -> Unit) {
     LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Cover(detail.summary, Modifier.size(116.dp))
-                Column(Modifier.weight(1f).padding(start = 18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(detail.summary.workNumber, style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary)
-                    val circle = detail.summary.facets.firstOrNull { it.kind == FacetKind.CIRCLE }
-                    if (circle != null) OtohaAssistChip(onClick = { onFacet(circle) }, label = circle.name)
-                    else Text(detail.summary.circle, style = MaterialTheme.typography.titleSmall)
-                    OtohaOutlinedButton(onClick = onFavorite, label = if (favorite) "♥ 已收藏" else "♡ 收藏")
-                }
+            WorkCoverHeader(detail.summary) {
+                Text(detail.summary.workNumber, style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary)
+                Text(detail.summary.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                val circle = detail.summary.facets.firstOrNull { it.kind == FacetKind.CIRCLE }
+                if (circle != null) OtohaAssistChip(onClick = { onFacet(circle) }, label = circle.name)
+                else Text(detail.summary.circle, style = MaterialTheme.typography.titleSmall)
+                OtohaOutlinedButton(onClick = onFavorite, label = if (favorite) "♥ 已收藏" else "♡ 收藏")
             }
         }
         item {
-            Text(detail.summary.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
             val actorFacets = detail.summary.facets.filter { it.kind == FacetKind.ACTOR }
             val tagFacets = detail.summary.facets.filter { it.kind == FacetKind.TAG }
             if (actorFacets.isNotEmpty()) DetailFacetChips(actorFacets, onFacet)
@@ -877,21 +918,21 @@ private fun MiniPlayer(state: PlaybackUi, onOpenDetail: () -> Unit, onOpenPlayer
 }
 
 @Composable
-private fun PlayerScreen(state: PlaybackUi, player: PlayerConnection, incognito: Boolean,
+private fun PlayerScreen(state: PlaybackUi, work: WorkSummary, player: PlayerConnection, incognito: Boolean,
     sleepDeadline: Long, onSleep: (Int) -> Unit, retrying: Boolean, onRetry: () -> Unit,
     modifier: Modifier = Modifier) {
-    var dragging by remember(state.work?.ref, state.track?.id) { mutableStateOf(false) }
-    var slider by remember(state.work?.ref, state.track?.id) { mutableFloatStateOf(0f) }
-    var queueOpen by rememberSaveable(state.work?.ref?.key) { mutableStateOf(false) }
-    var chaptersOpen by rememberSaveable(state.work?.ref?.key, state.track?.id) { mutableStateOf(false) }
+    var dragging by remember(work.ref, state.track?.id) { mutableStateOf(false) }
+    var slider by remember(work.ref, state.track?.id) { mutableFloatStateOf(0f) }
+    var queueOpen by rememberSaveable(work.ref.key) { mutableStateOf(false) }
+    var chaptersOpen by rememberSaveable(work.ref.key, state.track?.id) { mutableStateOf(false) }
     Column(modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        WorkCoverHeader(work) {
             Text(if (incognito) "正在播放 · 无痕" else "正在播放", style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(state.track?.title.orEmpty(), style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text(state.work?.title.orEmpty(), style = MaterialTheme.typography.bodySmall,
+            Text(work.title, style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         if (state.buffering) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -957,7 +998,7 @@ private fun PlayerScreen(state: PlaybackUi, player: PlayerConnection, incognito:
                 onSelect = onSleep, modifier = Modifier.weight(1f))
         }
         val chapterTrack = state.track?.takeIf { it.chapters.isNotEmpty() }
-        if (chapterTrack != null) key(state.work?.ref, chapterTrack.id) {
+        if (chapterTrack != null) key(work.ref, chapterTrack.id) {
             val chapters = chapterTrack.chapters
             PlayerSection("章节", "${chapters.size}", chaptersOpen, { chaptersOpen = !chaptersOpen }) {
                 chapters.forEach { chapter ->

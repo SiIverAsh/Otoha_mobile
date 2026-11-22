@@ -267,9 +267,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun open(work: WorkSummary) {
         if (!visible(work)) { message("请先在设置中启用分级内容显示"); return }
-        open(work.ref)
+        open(work.ref, knownWork = work)
     }
-    private fun open(ref: WorkRef) {
+    private fun open(ref: WorkRef, knownWork: WorkSummary? = null) {
         if (detailRef?.key == ref.key && (state.value.detailLoading || state.value.detail != null)) return
         detailJob?.cancel()
         detailRef = ref
@@ -278,7 +278,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.value = state.value.copy(detail = null, detailLoading = true)
         detailJob = viewModelScope.launch {
             try {
-                val result = client.detail(ref)
+                val result = client.detail(ref).withKnownCover(knownWork)
                 if (revision(ref.source) != requestRevision) return@launch
                 rememberWorks(listOf(result.summary))
                 if (!visible(result.summary)) {
@@ -413,4 +413,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun visible(work: WorkSummary): Boolean = store.data.value.showRestricted || work.rating == ContentRating.GENERAL
     fun message(text: String?) { mutableState.value = state.value.copy(message = text) }
     override fun onCleared() { player.close(); super.onCleared() }
+}
+
+/** Retains the selected work's cover when its detail response omits it. */
+internal fun WorkDetail.withKnownCover(knownWork: WorkSummary?): WorkDetail {
+    if (summary.coverUrl.isNotBlank() || knownWork == null) return this
+    if (knownWork.ref.key != summary.ref.key || knownWork.coverUrl.isBlank()) return this
+    return copy(summary = summary.copy(coverUrl = knownWork.coverUrl))
 }
