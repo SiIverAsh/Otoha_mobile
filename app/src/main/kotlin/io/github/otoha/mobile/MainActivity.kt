@@ -321,8 +321,29 @@ private fun OtohaApp(vm: MainViewModel = viewModel()) {
             modifier = Modifier.fillMaxHeight(PLAYER_SHEET_HEIGHT_FRACTION),
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {
-            PlayerScreen(playback, active, vm.player, incognito, sleepDeadline, vm.store::sleepAfter,
-                state.restoring, vm::retryPlayback, Modifier.padding(horizontal = 24.dp))
+            PlayerScreen(
+                state = playback,
+                work = active,
+                player = vm.player,
+                incognito = incognito,
+                sleepDeadline = sleepDeadline,
+                onSleep = vm.store::sleepAfter,
+                retrying = state.restoring,
+                onRetry = vm::retryPlayback,
+                favorite = personal.favorites.any { it.ref.key == active.ref.key },
+                onFavorite = { vm.store.toggleFavorite(active) },
+                onOpenDetail = {
+                    playerOpen = false
+                    vm.open(active)
+                },
+                onFacet = { facet ->
+                    playerOpen = false
+                    vm.selectDetailFacet(facet)
+                    searchOpen = false
+                    tab = 0
+                },
+                modifier = Modifier.padding(horizontal = 24.dp),
+            )
         }
     }
     if (linkOpen) LinkDialog(onDismiss = { linkOpen = false }, onOpen = { vm.openLink(it); linkOpen = false })
@@ -578,7 +599,7 @@ private fun SourceId.other(): SourceId = when (this) {
     SourceId.ASMR18 -> SourceId.ASMR_ONE
 }
 
-private fun SourceId.displayName(): String = when (this) {
+internal fun SourceId.displayName(): String = when (this) {
     SourceId.ASMR_ONE -> "ASMR.one"
     SourceId.ASMR18 -> "ASMR18"
 }
@@ -918,22 +939,97 @@ private fun MiniPlayer(state: PlaybackUi, onOpenDetail: () -> Unit, onOpenPlayer
 }
 
 @Composable
-private fun PlayerScreen(state: PlaybackUi, work: WorkSummary, player: PlayerConnection, incognito: Boolean,
-    sleepDeadline: Long, onSleep: (Int) -> Unit, retrying: Boolean, onRetry: () -> Unit,
-    modifier: Modifier = Modifier) {
+private fun PlayerScreen(
+    state: PlaybackUi,
+    work: WorkSummary,
+    player: PlayerConnection,
+    incognito: Boolean,
+    sleepDeadline: Long,
+    onSleep: (Int) -> Unit,
+    retrying: Boolean,
+    onRetry: () -> Unit,
+    favorite: Boolean,
+    onFavorite: () -> Unit,
+    onOpenDetail: () -> Unit,
+    onFacet: (FacetValue) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     var dragging by remember(work.ref, state.track?.id) { mutableStateOf(false) }
     var slider by remember(work.ref, state.track?.id) { mutableFloatStateOf(0f) }
     var queueOpen by rememberSaveable(work.ref.key) { mutableStateOf(false) }
     var chaptersOpen by rememberSaveable(work.ref.key, state.track?.id) { mutableStateOf(false) }
-    Column(modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        WorkCoverHeader(work) {
-            Text(if (incognito) "正在播放 · 无痕" else "正在播放", style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(state.track?.title.orEmpty(), style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text(work.title, style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    Column(
+        modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            PlayerBadge(
+                text = PlayerInfo.playbackStatus(state, incognito),
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
+            Spacer(Modifier.weight(1f))
+            OtohaTextButton(onClick = onFavorite, label = if (favorite) "♥ 已收藏" else "♡ 收藏")
+            OtohaTextButton(onClick = onOpenDetail, label = "作品详情 ›")
+        }
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Cover(
+                work = work,
+                modifier = Modifier
+                    .widthIn(max = 280.dp)
+                    .fillMaxWidth()
+                    .aspectRatio(WORK_COVER_ASPECT_RATIO)
+                    .clip(RoundedCornerShape(18.dp))
+                    .semantics {
+                        role = Role.Image
+                        contentDescription = if (work.coverUrl.isBlank()) "暂无作品封面" else "作品封面"
+                    },
+                contentScale = ContentScale.Fit,
+            )
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                state.track?.title.orEmpty().ifBlank { work.title },
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (state.track?.title?.isNotBlank() == true) {
+                Text(
+                    work.title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            val credit = listOfNotNull(
+                work.circle.takeIf(String::isNotBlank),
+                work.actors.takeIf { it.isNotEmpty() }?.joinToString(" / "),
+            ).joinToString(" · ")
+            if (credit.isNotEmpty()) {
+                Text(
+                    credit,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(top = 4.dp),
+            ) {
+                PlayerInfo.badges(work, state).forEach { badge ->
+                    PlayerBadge(text = badge)
+                }
+            }
         }
         if (state.buffering) LinearProgressIndicator(Modifier.fillMaxWidth())
         val manualRetry = state.recoveryStatus == RecoveryStatus.EXHAUSTED ||
@@ -950,76 +1046,132 @@ private fun PlayerScreen(state: PlaybackUi, work: WorkSummary, player: PlayerCon
                 enabled = state.connected && !retrying,
             )
         }
-        if (state.track?.subtitle != null) Surface(color = MaterialTheme.colorScheme.surfaceContainer,
-            shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
-            Text(SubtitleDisplay.content(state.subtitleText, state.subtitleLoading, state.subtitleError), Modifier.padding(16.dp),
-                style = MaterialTheme.typography.bodyLarge)
-        }
-        Column {
-            Slider(value = if (dragging) slider else if (state.durationMs > 0)
-                (state.positionMs.toFloat() / state.durationMs).coerceIn(0f, 1f) else 0f,
-                enabled = state.durationMs > 0,
-                modifier = Modifier.semantics { contentDescription = "播放进度" },
-                onValueChange = { dragging = true; slider = it },
-                onValueChangeFinished = { player.seek((slider * state.durationMs).toLong()); dragging = false })
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(time(if (dragging) (slider * state.durationMs).toLong() else state.positionMs),
-                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(time(state.durationMs), style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (state.track?.subtitle != null) Surface(
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    "实时字幕",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    SubtitleDisplay.content(state.subtitleText, state.subtitleLoading, state.subtitleError),
+                    style = MaterialTheme.typography.bodyLarge,
+                )
             }
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-            OtohaIconButton(onClick = player::previous, enabled = state.index > 0) {
-                Icon(painterResource(R.drawable.ic_player_previous), contentDescription = "上一曲")
-            }
-            val playPress = rememberButtonPress()
-            FilledIconButton(
-                onClick = player::toggle,
-                modifier = Modifier.size(64.dp).then(playPress.modifier),
-                interactionSource = playPress.interactionSource,
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            shape = RoundedCornerShape(18.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Icon(painterResource(if (state.showPause) R.drawable.ic_player_pause else R.drawable.ic_player_play),
-                    contentDescription = if (state.showPause) "暂停" else "播放", modifier = Modifier.size(30.dp))
-            }
-            OtohaIconButton(onClick = player::next, enabled = state.index < state.tracks.lastIndex) {
-                Icon(painterResource(R.drawable.ic_player_next), contentDescription = "下一曲")
+                Column {
+                    Slider(
+                        value = if (dragging) slider else if (state.durationMs > 0)
+                            (state.positionMs.toFloat() / state.durationMs).coerceIn(0f, 1f) else 0f,
+                        enabled = state.durationMs > 0,
+                        modifier = Modifier.semantics { contentDescription = "播放进度" },
+                        onValueChange = { dragging = true; slider = it },
+                        onValueChangeFinished = { player.seek((slider * state.durationMs).toLong()); dragging = false },
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(
+                            time(if (dragging) (slider * state.durationMs).toLong() else state.positionMs),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            time(state.durationMs),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OtohaIconButton(onClick = player::previous, enabled = state.index > 0) {
+                        Icon(painterResource(R.drawable.ic_player_previous), contentDescription = "上一曲")
+                    }
+                    val playPress = rememberButtonPress()
+                    FilledIconButton(
+                        onClick = player::toggle,
+                        modifier = Modifier.size(64.dp).then(playPress.modifier),
+                        interactionSource = playPress.interactionSource,
+                    ) {
+                        Icon(
+                            painterResource(if (state.showPause) R.drawable.ic_player_pause else R.drawable.ic_player_play),
+                            contentDescription = if (state.showPause) "暂停" else "播放",
+                            modifier = Modifier.size(30.dp),
+                        )
+                    }
+                    OtohaIconButton(onClick = player::next, enabled = state.index < state.tracks.lastIndex) {
+                        Icon(painterResource(R.drawable.ic_player_next), contentDescription = "下一曲")
+                    }
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PlayerOptionMenu(
+                        label = "${state.speed.toString().removeSuffix(".0")}×",
+                        description = "播放速度",
+                        selected = state.speed,
+                        options = listOf(.75f to "0.75×", 1f to "1×", 1.25f to "1.25×", 1.5f to "1.5×", 2f to "2×"),
+                        onSelect = player::speed,
+                        modifier = Modifier.weight(1f),
+                    )
+                    val remainingMinutes = if (sleepDeadline > 0)
+                        ((sleepDeadline - SystemClock.elapsedRealtime()).coerceAtLeast(0) + 59_999) / 60_000 else 0
+                    PlayerOptionMenu(
+                        label = if (sleepDeadline > 0) "约 $remainingMinutes 分钟" else "定时",
+                        description = "睡眠定时",
+                        selected = if (sleepDeadline == 0L) 0 else null,
+                        options = listOf(0 to "关闭定时", 15 to "15 分钟", 30 to "30 分钟", 60 to "60 分钟"),
+                        onSelect = onSleep,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             }
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            PlayerOptionMenu(label = "${state.speed.toString().removeSuffix(".0")}×", description = "播放速度",
-                selected = state.speed, options = listOf(.75f to "0.75×", 1f to "1×", 1.25f to "1.25×", 1.5f to "1.5×", 2f to "2×"),
-                onSelect = player::speed, modifier = Modifier.weight(1f))
-            val remainingMinutes = if (sleepDeadline > 0)
-                ((sleepDeadline - SystemClock.elapsedRealtime()).coerceAtLeast(0) + 59_999) / 60_000 else 0
-            PlayerOptionMenu(label = if (sleepDeadline > 0) "约 $remainingMinutes 分钟" else "定时",
-                description = "睡眠定时", selected = if (sleepDeadline == 0L) 0 else null,
-                options = listOf(0 to "关闭定时", 15 to "15 分钟", 30 to "30 分钟", 60 to "60 分钟"),
-                onSelect = onSleep, modifier = Modifier.weight(1f))
-        }
+        AudioInfoCard(work = work, state = state, onFacet = onFacet)
         val chapterTrack = state.track?.takeIf { it.chapters.isNotEmpty() }
         if (chapterTrack != null) key(work.ref, chapterTrack.id) {
             val chapters = chapterTrack.chapters
+            val activeChapter = PlayerInfo.activeChapterIndex(chapters, state.positionMs)
             PlayerSection("章节", "${chapters.size}", chaptersOpen, { chaptersOpen = !chaptersOpen }) {
-                chapters.forEach { chapter ->
+                chapters.forEachIndexed { index, chapter ->
+                    val isCurrent = index == activeChapter
+                    val colors = MaterialTheme.colorScheme
                     val press = rememberButtonPress()
                     Row(
-                        Modifier.fillMaxWidth().then(press.modifier).clickable(
-                            enabled = chaptersOpen,
-                            interactionSource = press.interactionSource,
-                        ) { player.seek(chapter.startMs) }
+                        Modifier.fillMaxWidth().then(press.modifier)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (isCurrent) colors.surfaceContainer else Color.Transparent)
+                            .clickable(
+                                enabled = chaptersOpen,
+                                interactionSource = press.interactionSource,
+                            ) { player.seek(chapter.startMs) }
+                            .semantics { selected = isCurrent }
                             .heightIn(min = 48.dp).padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
                             chapter.title,
                             Modifier.weight(1f).padding(end = 12.dp),
+                            color = if (isCurrent) colors.primary else colors.onSurface,
                             style = MaterialTheme.typography.bodyMedium,
                         )
                         Text(
                             time(chapter.startMs),
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = colors.onSurfaceVariant,
                         )
                     }
                 }
@@ -1052,6 +1204,114 @@ private fun PlayerScreen(state: PlaybackUi, work: WorkSummary, player: PlayerCon
                         color = if (isCurrent) colors.primary else colors.onSurface,
                         style = MaterialTheme.typography.bodyMedium,
                     )
+                    if (track.durationMs > 0) {
+                        Text(
+                            time(track.durationMs),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlayerBadge(
+    text: String,
+    containerColor: Color = MaterialTheme.colorScheme.surfaceContainer,
+    contentColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+) {
+    Surface(color = containerColor, shape = RoundedCornerShape(999.dp)) {
+        Text(
+            text = text,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = contentColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+internal fun AudioInfoCard(
+    work: WorkSummary,
+    state: PlaybackUi,
+    onFacet: ((FacetValue) -> Unit)? = null,
+    modifier: Modifier = Modifier,
+) {
+    val rows = remember(work, state.track, state.tracks, state.index, state.durationMs) {
+        PlayerInfo.infoRows(work, state)
+    }
+    val tagFacets = remember(work.facets) { PlayerInfo.tagFacets(work) }
+    val tagLabels = remember(work.tags) { PlayerInfo.tagLabels(work) }
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        shape = RoundedCornerShape(18.dp),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                "音频信息",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            rows.forEach { row ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Text(
+                        row.label,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        row.value,
+                        modifier = Modifier.weight(1f),
+                        textAlign = TextAlign.End,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            if (tagFacets.isNotEmpty() || tagLabels.isNotEmpty()) {
+                HorizontalDivider(Modifier.padding(top = 2.dp))
+                Text(
+                    "作品标签",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (tagFacets.isNotEmpty() && onFacet != null) {
+                        tagFacets.forEach { facet ->
+                            OtohaAssistChip(
+                                onClick = { onFacet(facet) },
+                                label = facet.name,
+                                modifier = Modifier.widthIn(max = 220.dp),
+                            )
+                        }
+                    } else {
+                        val labels = if (tagLabels.isNotEmpty()) tagLabels else tagFacets.map { it.name }
+                        labels.forEach { label ->
+                            PlayerBadge(
+                                text = label,
+                                containerColor = MaterialTheme.colorScheme.background,
+                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -1197,8 +1457,4 @@ private fun ErrorCard(error: String, onRetry: () -> Unit) {
     }
 }
 
-private fun time(ms: Long): String {
-    val seconds = (ms / 1000).coerceAtLeast(0)
-    return if (seconds >= 3600) "%d:%02d:%02d".format(seconds / 3600, seconds / 60 % 60, seconds % 60)
-        else "%d:%02d".format(seconds / 60, seconds % 60)
-}
+private fun time(ms: Long): String = PlayerInfo.formatDuration(ms)
