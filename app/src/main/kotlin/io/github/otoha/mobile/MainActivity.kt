@@ -708,6 +708,7 @@ internal fun WorkCoverHeader(work: WorkSummary, content: @Composable ColumnScope
 @Composable
 private fun DetailScreen(detail: WorkDetail, favorite: Boolean, connected: Boolean,
     onFavorite: () -> Unit, onFacet: (FacetValue) -> Unit, onPlay: (AudioTrack) -> Unit) {
+    val isChapterSplit = detail.tracks.firstOrNull()?.clipStartMs != null
     LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             WorkCoverHeader(detail.summary) {
@@ -732,15 +733,18 @@ private fun DetailScreen(detail: WorkDetail, favorite: Boolean, connected: Boole
         }
         item {
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
-            Text("选择版本与曲目", style = MaterialTheme.typography.titleMedium)
-            Text("每次只播放所选目录中的曲目", Modifier.padding(top = 4.dp), style = MaterialTheme.typography.bodySmall,
+            Text(if (isChapterSplit) "章节曲目" else "选择版本与曲目", style = MaterialTheme.typography.titleMedium)
+            Text(if (isChapterSplit) "从所选章节开始顺序播放" else "每次只播放所选目录中的曲目",
+                Modifier.padding(top = 4.dp), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.secondary)
         }
         detail.tracks.groupBy { it.directory }.forEach { (directory, tracks) ->
-            item(key = "folder:$directory") {
-                Text(directory.joinToString(" / ").ifBlank { "作品音轨" },
-                    Modifier.padding(top = 10.dp), style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary)
+            if (!isChapterSplit) {
+                item(key = "folder:$directory") {
+                    Text(directory.joinToString(" / ").ifBlank { "作品音轨" },
+                        Modifier.padding(top = 10.dp), style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary)
+                }
             }
             items(tracks, key = { "track:${it.id}" }) { track ->
                 val press = rememberButtonPress()

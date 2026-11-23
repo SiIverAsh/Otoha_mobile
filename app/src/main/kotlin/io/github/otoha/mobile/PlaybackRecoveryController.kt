@@ -102,14 +102,15 @@ internal class PlaybackRecoveryController(
                 ensureActive()
                 if (itemKey() != key || !player.playWhenReady || !condition().needsRecovery() || online == false) return@launch
                 if (!isVisible(detail.summary)) return@launch
-                val tracks = refreshedQueue(snapshot.tracks, detail)
+                // Include seeks made while the request was pending.
+                val latest = snapshot.copy(positionMs = player.currentPosition.coerceAtLeast(0))
+                val playback = refreshedPlayback(latest, detail)
                 val token = player.currentMediaItem?.mediaMetadata?.extras?.getString(MediaExtras.RECORDING_TOKEN)
-                val items = playbackMediaItems(detail.summary, tracks, token)
-                // Read the live position after the request, including any seek made while it was pending.
+                val items = playbackMediaItems(playback.work, playback.tracks, token)
                 // Replacing media items preserves playWhenReady, speed and the queue's recording permission.
                 applying = true
                 try {
-                    player.setMediaItems(items, player.currentMediaItemIndex, player.currentPosition.coerceAtLeast(0))
+                    player.setMediaItems(items, playback.index, playback.positionMs)
                     player.prepare()
                 } finally {
                     applying = false

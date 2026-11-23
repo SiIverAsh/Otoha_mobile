@@ -67,6 +67,9 @@ data class AudioTrack(
     val isHls: Boolean = false,
     val chapters: List<Chapter> = emptyList(),
     val subtitle: Subtitle? = null,
+    // Virtual tracks use an absolute start. A zero duration lets the last clip play to the stream end.
+    val clipStartMs: Long? = null,
+    val sourceTrackId: String? = null,
 )
 
 @Serializable

@@ -8,7 +8,7 @@ Otoha Mobile 延续 [SiIverAsh/Otoha](https://github.com/SiIverAsh/Otoha) 的 GP
 | --- | --- |
 | AsmrOneClient / AsmrOneParser | internal/asmrone/client.go、dto.go、client_test.go |
 | AsmrOneTrackTitles / DlsiteTrackListParser | internal/scrape/asmrone_track_titles.go、internal/db/asmrone_tracks.go、internal/dlsite/tracklist.go |
-| Asmr18Client / Asmr18Parser 与 work.html 测试样例 | internal/asmr18/client.go、client_test.go、testdata/work.html |
+| Asmr18Client / Asmr18Parser 与 work.html 测试样例 | internal/asmr18/client.go、client_test.go、testdata/work.html、internal/db/asmr18_tracks.go |
 | SubtitleParser | internal/subtitle/parse.go、parse_test.go |
 
 原项目工作区只读使用。未内嵌原 Go HTTP 服务、索引或数据库。

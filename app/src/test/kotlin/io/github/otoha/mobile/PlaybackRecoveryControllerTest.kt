@@ -103,6 +103,35 @@ class PlaybackRecoveryControllerTest {
         }
     }
 
+    @Test fun reconnectMigratesAnOlderWholeStreamQueueAtTheLatestSeekPosition() {
+        val legacyWork = work.copy(ref = WorkRef(SourceId.ASMR18, "allages/rj012345"))
+        val source = tracks.first().copy(isHls = true)
+        val refreshedSource = source.copy(url = "https://media.test/new/1", sourceTrackId = source.id)
+        val chapters = listOf(
+            refreshedSource.copy(id = "1:0", clipStartMs = 0, durationMs = 5_000),
+            refreshedSource.copy(id = "1:5000", title = "Last", clipStartMs = 5_000),
+        )
+        player.setMediaItems(playbackMediaItems(legacyWork, listOf(source), "original-queue"), 0, 4_000)
+        controller.onNetworkChanged(false)
+        controller.onNetworkChanged(true)
+        main.idle()
+        assertEquals(listOf(legacyWork.ref), requests)
+
+        player.seekTo(8_700)
+        response.complete(WorkDetail(legacyWork, chapters))
+        main.idle()
+
+        assertEquals(chapters.map { it.url }, queueUrls())
+        assertEquals(1, player.currentMediaItemIndex)
+        assertEquals(3_700L, player.currentPosition)
+        assertEquals(1.5f, player.playbackParameters.speed, 0f)
+        assertTrue(player.playWhenReady)
+        assertEquals(1, player.prepares)
+        val snapshot = requireNotNull(player.playbackSnapshot())
+        assertEquals(chapters, snapshot.tracks)
+        assertEquals(3_700L, snapshot.positionMs)
+    }
+
     @Test fun aBriefOnlineBufferDoesNotRefreshButAStalledBufferDoes() {
         controller.onNetworkChanged(true)
         controller.evaluate()

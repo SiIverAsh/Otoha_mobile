@@ -10,6 +10,7 @@ import org.jsoup.nodes.Element
  */
 object Asmr18Parser {
     const val baseUrl = "https://asmr18.fans"
+    private const val MAX_CHAPTER_START_MS = Long.MAX_VALUE / 1_000
     val categories = setOf("allages", "boys", "girls")
     private val workPath = Regex("^/(boys|girls|allages)/(rj(?:[0-9]{8}|[0-9]{6}))/$")
     private val cdnHost = Regex("^cdn[0-9]+\\.cloudintech\\.net$")
@@ -212,15 +213,44 @@ object Asmr18Parser {
             }
         }
         if (tracks.isEmpty()) throw SourceException("ASMR18 未找到受支持的 HLS 播放源，页面或 CDN 可能已变化")
-        return WorkDetail(summary, tracks)
+        val splitTracks = tracks.singleOrNull()?.let(::splitChapters)
+        val playableTracks = splitTracks ?: tracks.map { track ->
+            track.copy(chapters = track.chapters.distinctBy { it.startMs }.sortedBy { it.startMs })
+        }
+        return WorkDetail(summary, playableTracks)
+    }
+
+    // Follow Otoha's ASMR18SegmentsFromChapters: source cues must cover the
+    // entire stream in order. The player can determine the final end.
+    private fun splitChapters(track: AudioTrack): List<AudioTrack>? {
+        val cues = track.chapters.filterIndexed { index, chapter ->
+            track.chapters.getOrNull(index - 1) != chapter
+        }
+        if (cues.size < 2 || cues.first().startMs != 0L || cues.any { it.title.isBlank() }) return null
+        if (cues.zipWithNext().any { (chapter, next) -> chapter.startMs >= next.startMs }) return null
+        return cues.mapIndexed { index, chapter ->
+            val endMs = cues.getOrNull(index + 1)?.startMs
+            track.copy(
+                id = "${track.id}:chapter:${chapter.startMs}",
+                title = chapter.title,
+                durationMs = endMs?.minus(chapter.startMs) ?: 0,
+                chapters = emptyList(),
+                clipStartMs = chapter.startMs,
+                sourceTrackId = track.id,
+            )
+        }
     }
 
     private fun chapters(element: Element): List<Chapter> = element.select("#chapter a[data-value]")
         .mapNotNull { anchor ->
-            val start = anchor.attr("data-value").toDoubleOrNull()
-            if (start == null || !start.isFinite() || start < 0 || start > Long.MAX_VALUE / 1000.0) null
-            else Chapter(anchor.clone().apply { select("span").remove() }.text().trim(), (start * 1000).toLong())
-        }.distinctBy { it.startMs }.sortedBy { it.startMs }
+            val seconds = anchor.attr("data-value").toDoubleOrNull()
+            if (seconds == null || !seconds.isFinite() || seconds < 0) return@mapNotNull null
+            // Media3 converts the millisecond offset to microseconds.
+            val startMs = (seconds * 1_000).toLong()
+            if (startMs > MAX_CHAPTER_START_MS) return@mapNotNull null
+            val title = anchor.clone().apply { select("span").remove() }.text().trim()
+            Chapter(title, startMs)
+        }
 
     private fun rating(category: String) = if (category == "allages") ContentRating.GENERAL else ContentRating.RESTRICTED
 

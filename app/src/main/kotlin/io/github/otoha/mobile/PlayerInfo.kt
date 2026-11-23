@@ -45,6 +45,7 @@ internal object PlayerInfo {
     fun directoryLabel(track: AudioTrack?): String? {
         if (track == null) return null
         if (track.directory.isNotEmpty()) return track.directory.joinToString(" / ")
+        if (track.clipStartMs != null) return "章节分段"
         return null
     }
 
@@ -82,7 +83,13 @@ internal object PlayerInfo {
         if (work.circle.isNotBlank()) add(AudioInfoRow("社团", work.circle))
         if (work.actors.isNotEmpty()) add(AudioInfoRow("声优", work.actors.joinToString(" / ")))
         directoryLabel(state.track)?.let { add(AudioInfoRow("目录 / 版本", it)) }
-        add(AudioInfoRow("音频格式", formatLabel(state.track)))
+        val formatValue = buildString {
+            append(formatLabel(state.track))
+            if (state.track?.clipStartMs != null && state.track?.directory?.isNotEmpty() == true) {
+                append(" · 章节分段")
+            }
+        }
+        add(AudioInfoRow("音频格式", formatValue))
         add(
             AudioInfoRow(
                 "当前时长",

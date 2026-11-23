@@ -4,6 +4,50 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class Asmr18ParserTest {
+    @Test fun singleStreamWithContinuousChapterCuesBecomesOnePlaybackQueue() {
+        val pageUrl = "https://asmr18.fans/allages/rj123456/"
+        val html = singleStreamPage(
+            """
+            <a data-value="0">Intro<span>00:00</span></a>
+            <a data-value="0">Intro<span>00:00</span></a>
+            <a data-value="10.25">Second<span>00:10</span></a>
+            <a data-value="25">Last<span>00:25</span></a>
+            """.trimIndent(),
+        )
+        val work = Asmr18Parser.parseWork(pageUrl, html)
+        val refreshed = Asmr18Parser.parseWork(pageUrl, html.replace("cdn3.", "cdn8.").replace("Intro", "New Intro"))
+
+        assertEquals(listOf("Intro", "Second", "Last"), work.tracks.map { it.title })
+        assertEquals(listOf(0L, 10_250L, 25_000L), work.tracks.map { it.clipStartMs })
+        assertEquals(listOf(10_250L, 14_750L, 0L), work.tracks.map { it.durationMs })
+        assertEquals(setOf("file1_content-1"), work.tracks.map { it.sourceTrackId }.toSet())
+        assertTrue(work.tracks.all { it.chapters.isEmpty() })
+        assertEquals(work.tracks, work.queueFor(work.tracks[1]))
+        assertEquals(work.tracks.map { it.id }, refreshed.tracks.map { it.id })
+        assertNotEquals(work.tracks.map { it.url }, refreshed.tracks.map { it.url })
+    }
+
+    @Test fun ambiguousChapterCuesKeepTheOriginalStream() {
+        val unsafeCues = listOf(
+            """<a data-value="0">Only chapter</a>""",
+            """<a data-value="1">Intro</a><a data-value="10">Second</a>""",
+            """<a data-value="0">Intro</a><a data-value="10"><span>00:10</span></a>""",
+            """<a data-value="0">Intro</a><a data-value="10">Conflicting</a><a data-value="10">Second</a>""",
+            """<a data-value="0">Intro</a><a data-value="20">Later</a><a data-value="10">Earlier</a>""",
+            """<a data-value="0">Intro</a><a data-value="10">Next</a><a data-value="0">Intro</a>""",
+            """<a data-value="0">Intro</a><a data-value="9223372036855">Outside supported range</a>""",
+        )
+        for (cues in unsafeCues) {
+            val work = Asmr18Parser.parseWork(
+                "https://asmr18.fans/allages/rj123456/",
+                singleStreamPage(cues),
+            )
+            val track = work.tracks.single()
+            assertEquals("file1_content-1", track.id)
+            assertNull(track.clipStartMs)
+        }
+    }
+
     @Test fun parsesRealPackedPlayerWithoutExecutingJavaScript() {
         val html = javaClass.getResource("/asmr18-work.html")!!.readText()
         val work = Asmr18Parser.parseWork("https://asmr18.fans/allages/rj01752865/", html)
@@ -13,12 +57,12 @@ class Asmr18ParserTest {
         assertEquals(listOf("中井みのる"), work.summary.actors)
         assertEquals(ContentRating.GENERAL, work.summary.rating)
         assertEquals(5, work.summary.tags.size)
-        val track = work.tracks.single()
-        assertTrue(track.isHls)
-        assertEquals("https://cdn3.cloudintech.net/file/RJ01752865/RJ01752865.m3u8", track.url)
-        assertEquals(5, track.chapters.size)
-        assertEquals(Chapter("02もこもこシャンプー", 1_825_000L), track.chapters[1])
-        assertNull(track.subtitle)
+        assertEquals(5, work.tracks.size)
+        val url = "https://cdn3.cloudintech.net/file/RJ01752865/RJ01752865.m3u8"
+        assertTrue(work.tracks.all { it.isHls && it.url == url && it.subtitle == null })
+        assertEquals("02もこもこシャンプー", work.tracks[1].title)
+        assertEquals(listOf(0L, 1_825_000L, 3_744_000L, 5_750_000L, 9_069_000L), work.tracks.map { it.clipStartMs })
+        assertEquals(listOf(1_825_000L, 1_919_000L, 2_006_000L, 3_319_000L, 0L), work.tracks.map { it.durationMs })
     }
 
     @Test fun tabsKeepIndependentChaptersAndStableIdentityWhenCdnChanges() {
@@ -26,7 +70,8 @@ class Asmr18ParserTest {
             <h1>Multi</h1><label for="file1">SEあり</label><label for="file2">SEなし</label>
             <div class="tab_content" id="file1_content">
             <script>const src='https://cdn3.cloudintech.net/file/RJ123456/1.m3u8';</script>
-            <div id="chapter"><a data-value="0">One<span>00:00</span></a></div></div>
+            <div id="chapter"><a data-value="0">One<span>00:00</span></a>
+            <a data-value="10">Another<span>00:10</span></a></div></div>
             <div class="tab_content" id="file2_content">
             <script>const src='https://cdn3.cloudintech.net/file/RJ123456/2.m3u8';</script>
             <div id="chapter"><a data-value="10.25">Two<span>00:10</span></a>
@@ -37,6 +82,8 @@ class Asmr18ParserTest {
         assertEquals(2, work.tracks.size)
         assertEquals("SEあり", work.tracks[0].title)
         assertEquals("SEなし", work.tracks[1].title)
+        assertEquals(2, work.tracks[0].chapters.size)
+        assertTrue(work.tracks.all { it.clipStartMs == null })
         assertEquals(listOf(Chapter("Two", 10_250)), work.tracks[1].chapters)
         assertEquals(1, work.queueFor(work.tracks[0]).size)
         assertNotEquals(work.tracks[0].id, work.tracks[1].id)
@@ -97,6 +144,12 @@ class Asmr18ParserTest {
         assertTrue(empty.works.isEmpty())
         assertFalse(empty.hasMore)
     }
+
+    private fun singleStreamPage(cues: String): String = """
+        <h1>Album</h1><div class="tab_content" id="file1_content">
+        <script>const src='https://cdn3.cloudintech.net/file/RJ123456/full.m3u8';</script>
+        </div><div id="chapter">$cues</div>
+    """.trimIndent()
 
     private inline fun <reified T : Throwable> expectFailure(block: () -> Unit): T {
         try { block() } catch (error: Throwable) {

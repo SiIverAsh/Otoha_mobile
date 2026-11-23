@@ -342,9 +342,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (revision(snapshot.work.ref.source) != requestRevision) return@launch
                 val current = if (retry == null) snapshot else player.currentRetrySnapshot(retry) ?: return@launch
                 if (!visible(refreshed.summary)) error("此作品不在当前分级显示范围内")
-                val tracks = refreshedQueue(current.tracks, refreshed)
-                if (current.index !in tracks.indices) error("播放记录不完整，请重新选择曲目")
-                player.play(refreshed.summary, tracks, current.index, current.positionMs, current.speed,
+                val playback = refreshedPlayback(current, refreshed)
+                player.play(playback.work, playback.tracks, playback.index, playback.positionMs, playback.speed,
                     continuationToken = retry?.token, isContinuation = retry != null)
             } catch (cancel: CancellationException) { throw cancel
             } catch (error: Exception) {
