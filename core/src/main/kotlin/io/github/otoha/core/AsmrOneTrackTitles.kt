@@ -1,14 +1,7 @@
 package io.github.otoha.core
 
-import java.io.IOException
-import java.util.logging.Level
-import java.util.logging.Logger
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 
-private const val TRACK_LIST_TIMEOUT_MS = 6_000L
 private const val MIN_TRACK_COUNT = 2
 private const val MIN_DURATION_TOLERANCE_MS = 1_100L
 private const val MAX_DURATION_TOLERANCE_MS = 5_000L
@@ -20,7 +13,6 @@ private const val VERSION_SUFFIX =
 
 private val genericName = Regex("$NUMBERED_STEM$VERSION_SUFFIX", RegexOption.IGNORE_CASE)
 private val namedTrack = Regex("${NUMBERED_STEM}[ ._、・:–—-]+.*\\p{L}", RegexOption.IGNORE_CASE)
-private val logger = Logger.getLogger("io.github.otoha.core.AsmrOneTrackTitles")
 
 private data class NumberedTrack(
     val index: Int,
@@ -41,7 +33,7 @@ internal suspend fun fillAsmrOneTrackTitles(
         .values.mapNotNull(::completeNumberedGroup)
     if (groups.isEmpty()) return detail
 
-    val entries = loadTrackList(detail.summary.workNumber, requestTrackPage)
+    val entries = loadDlsiteTrackList(detail.summary.workNumber, requestTrackPage)
     val titlesByIndex = mutableMapOf<Int, String>()
     for (group in groups) {
         if (group.size != entries.size) continue
@@ -86,19 +78,4 @@ private fun durationMatches(actualMs: Long, publishedMs: Long): Boolean {
     val tolerance = (publishedMs * DURATION_TOLERANCE_RATIO)
         .coerceIn(MIN_DURATION_TOLERANCE_MS.toDouble(), MAX_DURATION_TOLERANCE_MS.toDouble())
     return abs(actualMs - publishedMs) <= tolerance
-}
-
-private suspend fun loadTrackList(
-    workNumber: String,
-    requestTrackPage: suspend (String) -> String,
-): List<DlsiteTrack> = try {
-    val entries = withTimeoutOrNull(TRACK_LIST_TIMEOUT_MS) {
-        val page = requestTrackPage(workNumber)
-        withContext(Dispatchers.Default) { DlsiteTrackListParser.parse(page) }
-    }
-    if (entries == null) logger.log(Level.WARNING, "DLsite track title lookup timed out for {0}", workNumber)
-    entries.orEmpty()
-} catch (error: IOException) {
-    logger.log(Level.WARNING, "DLsite track titles could not be loaded for {0}: {1}", arrayOf(workNumber, error.message))
-    emptyList()
 }

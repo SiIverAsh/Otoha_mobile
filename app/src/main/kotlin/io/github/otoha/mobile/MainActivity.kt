@@ -106,6 +106,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
@@ -706,9 +707,10 @@ internal fun WorkCoverHeader(work: WorkSummary, content: @Composable ColumnScope
 }
 
 @Composable
-private fun DetailScreen(detail: WorkDetail, favorite: Boolean, connected: Boolean,
+internal fun DetailScreen(detail: WorkDetail, favorite: Boolean, connected: Boolean,
     onFavorite: () -> Unit, onFacet: (FacetValue) -> Unit, onPlay: (AudioTrack) -> Unit) {
-    val isChapterSplit = detail.tracks.firstOrNull()?.clipStartMs != null
+    val tracksByDirectory = detail.tracks.groupBy { it.directory }
+    val hasSingleChapterQueue = tracksByDirectory.size == 1 && detail.tracks.all { it.clipStartMs != null }
     LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             WorkCoverHeader(detail.summary) {
@@ -733,16 +735,21 @@ private fun DetailScreen(detail: WorkDetail, favorite: Boolean, connected: Boole
         }
         item {
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
-            Text(if (isChapterSplit) "章节曲目" else "选择版本与曲目", style = MaterialTheme.typography.titleMedium)
-            Text(if (isChapterSplit) "从所选章节开始顺序播放" else "每次只播放所选目录中的曲目",
+            Text(if (hasSingleChapterQueue) "章节曲目" else "选择版本与曲目", style = MaterialTheme.typography.titleMedium)
+            Text(if (hasSingleChapterQueue) "从所选章节开始顺序播放" else "每次只播放所选版本中的曲目",
                 Modifier.padding(top = 4.dp), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.secondary)
         }
-        detail.tracks.groupBy { it.directory }.forEach { (directory, tracks) ->
-            if (!isChapterSplit) {
+        tracksByDirectory.forEach { (directory, tracks) ->
+            val firstTrack = tracks.first()
+            val sourceTitle = firstTrack.sourceTrackTitle ?: firstTrack.title.takeIf {
+                detail.summary.ref.source == SourceId.ASMR18 && firstTrack.clipStartMs == null
+            }
+            if (!hasSingleChapterQueue) {
                 item(key = "folder:$directory") {
-                    Text(directory.joinToString(" / ").ifBlank { "作品音轨" },
-                        Modifier.padding(top = 10.dp), style = MaterialTheme.typography.labelLarge,
+                    Text(sourceTitle ?: directory.joinToString(" / ").ifBlank { "作品音轨" },
+                        Modifier.padding(top = 10.dp).semantics { heading() },
+                        style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.primary)
                 }
             }
@@ -758,7 +765,9 @@ private fun DetailScreen(detail: WorkDetail, favorite: Boolean, connected: Boole
                     Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("▷", Modifier.width(28.dp), color = MaterialTheme.colorScheme.primary)
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(track.title, style = MaterialTheme.typography.bodyMedium)
+                            val trackTitle = if (track.clipStartMs == null && track.title == sourceTitle) "整轨播放"
+                                else track.title
+                            Text(trackTitle, style = MaterialTheme.typography.bodyMedium)
                             Text(listOfNotNull(track.durationMs.takeIf { it > 0 }?.let(::time),
                                 if (track.isHls) "HLS" else null,
                                 track.chapters.takeIf { it.isNotEmpty() }?.let { "${it.size} 个章节" })

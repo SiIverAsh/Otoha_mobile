@@ -1,11 +1,37 @@
 package io.github.otoha.core
 
+import java.io.IOException
 import java.text.Normalizer
+import java.util.logging.Level
+import java.util.logging.Logger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 
+private const val TRACK_LIST_TIMEOUT_MS = 6_000L
+private val logger: Logger = Logger.getLogger(DlsiteTrackListParser::class.java.name)
+
 /** A title and duration published in a DLsite work's track list. */
 internal data class DlsiteTrack(val title: String, val durationMs: Long)
+
+/** Loads the optional public track list within the detail request's lookup budget. */
+internal suspend fun loadDlsiteTrackList(
+    workNumber: String,
+    requestTrackPage: suspend (String) -> String,
+): List<DlsiteTrack> = try {
+    val entries = withTimeoutOrNull(TRACK_LIST_TIMEOUT_MS) {
+        val page = requestTrackPage(workNumber)
+        withContext(Dispatchers.Default) { DlsiteTrackListParser.parse(page) }
+    }
+    if (entries == null) logger.log(Level.WARNING, "DLsite track list lookup timed out for {0}", workNumber)
+    entries.orEmpty()
+} catch (error: IOException) {
+    logger.log(Level.WARNING, "DLsite track list could not be loaded for {0}: {1}",
+        arrayOf(workNumber, error.javaClass.simpleName))
+    emptyList()
+}
 
 /** Reads complete track lists following the desktop Otoha DLsite parser. */
 internal object DlsiteTrackListParser {

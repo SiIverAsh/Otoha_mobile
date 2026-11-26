@@ -70,6 +70,7 @@ data class AudioTrack(
     // Virtual tracks use an absolute start. A zero duration lets the last clip play to the stream end.
     val clipStartMs: Long? = null,
     val sourceTrackId: String? = null,
+    val sourceTrackTitle: String? = null,
 )
 
 @Serializable
