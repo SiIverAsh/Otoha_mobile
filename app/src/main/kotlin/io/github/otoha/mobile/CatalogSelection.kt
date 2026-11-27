@@ -49,10 +49,9 @@ internal data class CatalogSelection(
     val key: CatalogKey get() = CatalogKey(source, category, filters.values.sortedBy { it.kind.ordinal })
 
     fun withFacet(value: FacetValue): CatalogSelection {
-        val sameSource = source == value.source
-        val next = if (value.source == SourceId.ASMR18 || !sameSource) BrowseFilters(listOf(value))
-            else filters.with(value)
-        return copy(source = value.source, category = if (sameSource) category else "allages", filters = next)
+        require(value.source == source) { "筛选条件不属于当前音源" }
+        val next = if (source == SourceId.ASMR18) BrowseFilters(listOf(value)) else filters.with(value)
+        return copy(filters = next)
     }
     fun without(kind: FacetKind): CatalogSelection = copy(filters = filters.without(kind))
     fun cleared(): CatalogSelection = copy(filters = BrowseFilters())

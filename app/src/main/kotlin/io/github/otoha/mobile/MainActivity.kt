@@ -275,14 +275,18 @@ private fun OtohaApp(vm: MainViewModel = viewModel()) {
                     favorite = personal.favorites.any { it.ref.key == detail.summary.ref.key },
                     connected = playback.connected,
                     onFavorite = { vm.store.toggleFavorite(detail.summary) },
-                    onFacet = { vm.selectDetailFacet(it); searchOpen = false; tab = 0 },
+                    onFacet = { vm.selectDetailFacet(detail.summary, it); searchOpen = false; tab = 0 },
                     onPlay = { vm.play(detail, it); playerOpen = true })
                 searchOpen -> SearchScreen(state.search, searchGridStates.getValue(searchSource), personal.showRestricted, searchDraft,
                     { searchDraft = it }, vm::search, searchSource, { searchSource = it },
-                    { vm.loadSearchPage(searchSource, it) }, vm::open, { searchOpen = false; tab = 3 })
-                tab == 0 -> CatalogScreen(state, catalogGridState, personal.showRestricted, vm::selectSource, vm::selectCategory,
-                    vm::open, vm::loadCatalogPage,
-                    { vm.openFacetPicker(it) }, vm::removeFacet, vm::clearFacets, { tab = 3 })
+                    vm::loadSearchPage, vm::open, { searchOpen = false; tab = 3 })
+                tab == 0 -> {
+                    val selection = CatalogSelection(state.source, state.category, state.filters)
+                    val key = selection.key
+                    CatalogScreen(state, catalogGridState, personal.showRestricted, vm::selectSource, vm::selectCategory,
+                        vm::open, { vm.loadCatalogPage(key, it) },
+                        { vm.openFacetPicker(selection.source, it) }, vm::removeFacet, vm::clearFacets, { tab = 3 })
+                }
                 tab == 1 -> LocalWorks("收藏", personal.favorites.filter(vm::visible), "把喜欢的作品留在这里",
                     favoritesGridState, vm::open)
                 tab == 2 -> LocalWorks("最近收听", personal.recent.filter(vm::visible), "开始播放后会在这里留下记录",
@@ -339,7 +343,7 @@ private fun OtohaApp(vm: MainViewModel = viewModel()) {
                 },
                 onFacet = { facet ->
                     playerOpen = false
-                    vm.selectDetailFacet(facet)
+                    vm.selectDetailFacet(active, facet)
                     searchOpen = false
                     tab = 0
                 },
@@ -372,7 +376,7 @@ private fun OtohaApp(vm: MainViewModel = viewModel()) {
                         }
                     }
                 },
-                onReload = { if (!isClosing) vm.openFacetPicker(picker.kind, reload = true) },
+                onReload = { if (!isClosing) vm.openFacetPicker(picker.source, picker.kind, reload = true) },
             )
         }
     }
@@ -467,7 +471,7 @@ private fun CatalogScreen(
 private fun SearchScreen(
     search: SearchUi, gridState: LazyGridState, restricted: Boolean, draft: String, onDraft: (String) -> Unit,
     onSearch: (String) -> Unit, source: SourceId, onSource: (SourceId) -> Unit,
-    onPage: (Int) -> Unit, onOpen: (WorkSummary) -> Unit, onDisplaySettings: () -> Unit,
+    onPage: (SourceId, Int) -> Unit, onOpen: (WorkSummary) -> Unit, onDisplaySettings: () -> Unit,
 ) {
     val focus = LocalFocusManager.current
     val submit = {
@@ -514,7 +518,7 @@ private fun SearchScreen(
         if (search.keyword.isEmpty()) {
             Box(Modifier.padding(horizontal = 20.dp)) { EmptyState("输入关键词，同时搜索两个音源。") }
         } else {
-            PagedWorkList(search.pages[source] ?: CatalogUi(), gridState, restricted, onOpen, onPage,
+            PagedWorkList(search.pages[source] ?: CatalogUi(), gridState, restricted, onOpen, { onPage(source, it) },
                 onDisplaySettings, "此音源未找到相关作品", source.other(), onSource)
         }
     }

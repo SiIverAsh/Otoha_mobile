@@ -10,6 +10,7 @@ import io.github.otoha.core.WorkSummary
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -34,13 +35,10 @@ class CatalogSelectionTest {
         assertEquals(listOf(actor), selection.filters.values)
     }
 
-    @Test fun `detail facet from another source cannot carry old source conditions`() {
+    @Test fun `a facet cannot change the catalog source`() {
         val one = CatalogSelection().withFacet(facet(FacetKind.TAG, "t"))
         val eighteen = facet(FacetKind.CIRCLE, "c", SourceId.ASMR18)
-        val next = one.withFacet(eighteen)
-        assertEquals(SourceId.ASMR18, next.source)
-        assertEquals("allages", next.category)
-        assertEquals(listOf(eighteen), next.filters.values)
+        assertThrows(IllegalArgumentException::class.java) { one.withFacet(eighteen) }
     }
 
     @Test fun `remove and clear retain source scope without retaining removed conditions`() {

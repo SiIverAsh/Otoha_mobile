@@ -11,6 +11,7 @@ import io.github.otoha.core.ContentRating
 import io.github.otoha.core.FacetKind
 import io.github.otoha.core.FacetValue
 import io.github.otoha.core.PlaybackSnapshot
+import io.github.otoha.core.SourceClient
 import io.github.otoha.core.SourceId
 import io.github.otoha.core.WorkDetail
 import io.github.otoha.core.WorkRef
@@ -79,10 +80,14 @@ data class FacetPickerUi(
     val error: String? = null,
 )
 
-class MainViewModel(application: Application) : AndroidViewModel(application) {
-    private val app = application as OtohaApplication
+class MainViewModel internal constructor(
+    private val app: OtohaApplication,
+    private val sourceFor: (SourceId) -> SourceClient,
+) : AndroidViewModel(app) {
+    constructor(application: Application) : this(application as OtohaApplication, application::source)
+
     val store = app.store
-    val player = PlayerConnection(application, store)
+    val player = PlayerConnection(app, store)
     private val mutableState = MutableStateFlow(MainUi())
     val state = mutableState.asStateFlow()
     private val catalogs = CatalogPageCache<CatalogKey>(capacity = 12)
@@ -115,6 +120,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         switchCatalog(CatalogSelection(source))
     }
     fun selectCategory(category: String) {
+        if (state.value.source != SourceId.ASMR18) return
         if (category !in listOf("allages", "boys", "girls")) return
         if (category != "allages" && !store.data.value.showRestricted) return
         if (category == state.value.category) return
@@ -131,17 +137,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (state.value.catalog.page == 0) loadCatalogPage(1)
     }
     fun selectFacet(value: FacetValue) {
+        val picker = state.value.facetPicker ?: return
+        if (value.source != picker.source || value.kind != picker.kind) return
         closeDetail()
         switchCatalog(selection().withFacet(value), resetPage = true)
     }
-    fun selectDetailFacet(value: FacetValue) {
+    /** Browse a detail or player tag using the source that owns the displayed work. */
+    internal fun selectDetailFacet(work: WorkSummary, value: FacetValue) {
+        val source = work.ref.source
+        if (value.source != source) return
         closeDetail()
-        switchCatalog(CatalogSelection(value.source).withFacet(value), resetPage = true)
+        switchCatalog(CatalogSelection(source).withFacet(value), resetPage = true)
     }
     fun removeFacet(kind: FacetKind) = switchCatalog(selection().without(kind), resetPage = true)
     fun clearFacets() = switchCatalog(selection().cleared(), resetPage = true)
 
-    fun loadCatalogPage(page: Int) {
+    /** Drop pagination and retry actions from a catalog that is no longer shown. */
+    internal fun loadCatalogPage(renderedKey: CatalogKey, page: Int) {
+        if (renderedKey == selection().key) loadCatalogPage(page)
+    }
+
+    private fun loadCatalogPage(page: Int) {
         val old = state.value.catalog
         if (!old.canLoad(page)) return
         val requestedSelection = selection()
@@ -153,7 +169,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         val source = requestedSelection.source
         val requestToken = browseRequests.begin(key, revision(source))
-        val client = app.source(source)
+        val client = sourceFor(source)
         mutableState.value = state.value.copy(catalog = old.copy(request = CatalogUi.Request(page)))
         browseJob = viewModelScope.launch {
             val result = fetchPage(old, page) {
@@ -186,7 +202,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             updateSearchPage(source, cached)
             return
         }
-        val client = app.source(source)
+        val client = sourceFor(source)
         updateSearchPage(source, old.copy(request = CatalogUi.Request(page)))
         searchJobs[source] = viewModelScope.launch {
             val result = fetchPage(old, page) { client.search(search.keyword, page) }
@@ -235,15 +251,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return FacetPickerUi(source, kind, (remote + found + selected).distinctBy { it.key }
             .sortedBy { it.name.lowercase() }, found.size, remote.size, loading, error)
     }
-    fun openFacetPicker(kind: FacetKind, reload: Boolean = false) {
+    internal fun openFacetPicker(source: SourceId, kind: FacetKind, reload: Boolean = false) {
+        if (state.value.source != source) return
+        if (reload && state.value.facetPicker?.kind != kind) return
         facetJob?.cancel()
         val generation = ++facetGeneration
-        val source = state.value.source
         val requestRevision = revision(source)
         val cached = facetCache.containsKey(source to kind)
         mutableState.value = state.value.copy(facetPicker = pickerState(source, kind, !cached || reload))
         if (cached && !reload) return
-        val client = app.source(source)
+        val client = sourceFor(source)
         facetJob = viewModelScope.launch {
             try {
                 val options = client.facetOptions(kind).filter {
@@ -274,12 +291,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         detailJob?.cancel()
         detailRef = ref
         val requestRevision = revision(ref.source)
-        val client = app.source(ref.source)
+        val client = sourceFor(ref.source)
         mutableState.value = state.value.copy(detail = null, detailLoading = true)
         detailJob = viewModelScope.launch {
             try {
-                val result = client.detail(ref).withKnownCover(knownWork)
+                val received = client.detail(ref)
+                currentCoroutineContext().ensureActive()
                 if (revision(ref.source) != requestRevision) return@launch
+                check(received.summary.ref.source == ref.source) { "作品音源不匹配" }
+                val result = received.withKnownCover(knownWork)
                 rememberWorks(listOf(result.summary))
                 if (!visible(result.summary)) {
                     mutableState.value = state.value.copy(detailLoading = false)
@@ -287,6 +307,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } else mutableState.value = state.value.copy(detail = result, detailLoading = false)
             } catch (cancel: CancellationException) { throw cancel
             } catch (error: Exception) {
+                currentCoroutineContext().ensureActive()
                 if (revision(ref.source) == requestRevision)
                     mutableState.value = state.value.copy(detailLoading = false,
                         message = error.message ?: "作品加载失败，请重试")
@@ -333,7 +354,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!visible(snapshot.work) || state.value.restoring || !player.state.value.connected) return
         mutableState.value = state.value.copy(restoring = true)
         val requestRevision = revision(snapshot.work.ref.source)
-        val client = app.source(snapshot.work.ref.source)
+        val client = sourceFor(snapshot.work.ref.source)
         val generation = ++restoreGeneration
         restoreSource = snapshot.work.ref.source
         restoreJob = viewModelScope.launch {
